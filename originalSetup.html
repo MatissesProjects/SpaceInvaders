@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Space Invaders</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #000;
+            color: #fff;
+            font-family: 'Courier New', Courier, monospace;
+        }
+        #game-container {
+            border: 2px solid #3f3;
+            box-shadow: 0 0 15px #3f3;
+            position: relative;
+        }
+        canvas {
+            display: block;
+            background-color: #000;
+        }
+        #info-overlay {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            font-size: 20px;
+            display: flex;
+            justify-content: space-between;
+            width: calc(100% - 20px);
+        }
+        #game-over-screen {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #ff0000;
+            font-size: 48px;
+            text-align: center;
+            display: none; /* Hidden by default */
+            text-shadow: 0 0 10px #ff0000;
+        }
+         #game-over-screen button {
+            margin-top: 20px;
+            padding: 10px 20px;
+            font-size: 20px;
+            background-color: #3f3;
+            border: none;
+            color: #000;
+            cursor: pointer;
+            font-family: 'Courier New', Courier, monospace;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <canvas id="gameCanvas"></canvas>
+        <div id="info-overlay">
+            <span>SCORE: <span id="score">0</span></span>
+            <span>LIVES: <span id="lives">3</span></span>
+        </div>
+        <div id="game-over-screen">
+            GAME OVER
+            <button onclick="restartGame()">RESTART</button>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreElement = document.getElementById('score');
+        const livesElement = document.getElementById('lives');
+        const gameOverScreen = document.getElementById('game-over-screen');
+
+        // --- Game Configuration ---
+        const GAME_WIDTH = 800;
+        const GAME_HEIGHT = 600;
+        canvas.width = GAME_WIDTH;
+        canvas.height = GAME_HEIGHT;
+
+        // --- Player Class ---
+        class Player {
+            constructor() {
+                this.width = 50;
+                this.height = 30;
+                this.x = (GAME_WIDTH - this.width) / 2;
+                this.y = GAME_HEIGHT - this.height - 20;
+                this.speed = 7;
+                this.color = '#3f3'; // Green color for the player
+                this.lives = 3;
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+            }
+
+            move(direction) {
+                if (direction === 'left') {
+                    this.x -= this.speed;
+                }
+                if (direction === 'right') {
+                    this.x += this.speed;
+                }
+                // Keep player within bounds
+                if (this.x < 0) this.x = 0;
+                if (this.x + this.width > GAME_WIDTH) this.x = GAME_WIDTH - this.width;
+            }
+            
+            loseLife() {
+                this.lives--;
+                livesElement.textContent = this.lives;
+                if (this.lives <= 0) {
+                    gameOver = true;
+                }
+            }
+        }
+
+        // --- Projectile Class ---
+        class Projectile {
+            constructor(x, y, color = '#ff0', speed = -10) { // Negative speed moves up, positive moves down
+                this.width = 5;
+                this.height = 15;
+                this.x = x;
+                this.y = y;
+                this.speed = speed;
+                this.color = color;
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+            }
+
+            update() {
+                this.y += this.speed;
+            }
+        }
+        
+        // --- Invader Class ---
+        class Invader {
+            constructor(x, y) {
+                this.width = 40;
+                this.height = 30;
+                this.x = x;
+                this.y = y;
+                this.color = '#f0f'; // Magenta for invaders
+            }
+
+            draw() {
+                ctx.fillStyle = this.color;
+                ctx.fillRect(this.x, this.y, this.width, this.height);
+            }
+        }
+
+        // --- Barrier Block Class ---
+        class BarrierBlock {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.width = 10;
+                this.height = 10;
+                this.health = 4;
+                this.color = '#3f3'; // Same as player
+            }
+
+            draw() {
+                if (this.health > 0) {
+                    ctx.fillStyle = `rgba(63, 255, 63, ${this.health * 0.25})`;
+                    ctx.fillRect(this.x, this.y, this.width, this.height);
+                }
+            }
+        }
+        
+        // --- Game State and Management ---
+        let player;
+        let projectiles;
+        let alienProjectiles;
+        let invaders;
+        let barriers;
+        let score;
+        let keys = {};
+        let invaderDirection = 1; // 1 for right, -1 for left
+        let invaderSpeed = 0.5;
+        let invaderDrop = 10;
+        let alienShootChance = 0.002;
+        let gameOver = false;
+        let animationFrameId;
+
+        // Initialize the game state
+        function init() {
+            player = new Player();
+            projectiles = [];
+            alienProjectiles = [];
+            invaders = [];
+            barriers = [];
+            score = 0;
+            keys = {};
+            invaderDirection = 1;
+            gameOver = false;
+            gameOverScreen.style.display = 'none';
+            scoreElement.textContent = '0';
+            livesElement.textContent = player.lives;
+
+            // Create a grid of invaders
+            const rows = 5;
+            const cols = 10;
+            const invaderSpacing = 15;
+            for (let row = 0; row < rows; row++) {
+                for (let col = 0; col < cols; col++) {
+                    const invaderX = col * (40 + invaderSpacing) + 50;
+                    const invaderY = row * (30 + invaderSpacing) + 50;
+                    invaders.push(new Invader(invaderX, invaderY));
+                }
+            }
+
+            // Create barriers
+            const barrierCount = 4;
+            const barrierWidth = 80;
+            const totalBarrierWidth = barrierCount * barrierWidth;
+            const barrierSpacing = (GAME_WIDTH - totalBarrierWidth) / (barrierCount + 1);
+            for (let i = 0; i < barrierCount; i++) {
+                const barrierX = barrierSpacing * (i + 1) + barrierWidth * i;
+                const barrierY = GAME_HEIGHT - 120;
+                // Create a barrier from smaller blocks
+                for (let row = 0; row < 4; row++) {
+                    for (let col = 0; col < 8; col++) {
+                        barriers.push(new BarrierBlock(barrierX + col * 10, barrierY + row * 10));
+                    }
+                }
+            }
+        }
+
+
+        // --- Game Loop ---
+        function gameLoop() {
+            if (gameOver) {
+                gameOverScreen.style.display = 'block';
+                return;
+            }
+
+            // 1. Update game state
+            update();
+
+            // 2. Draw everything
+            draw();
+
+            // 3. Request next frame
+            animationFrameId = requestAnimationFrame(gameLoop);
+        }
+
+        function update() {
+            // Player movement
+            if (keys['ArrowLeft'] || keys['a']) {
+                player.move('left');
+            }
+            if (keys['ArrowRight'] || keys['d']) {
+                player.move('right');
+            }
+            
+            // Update projectiles
+            projectiles.forEach((p, index) => {
+                p.update();
+                if (p.y < 0) {
+                    projectiles.splice(index, 1);
+                }
+            });
+
+            // Update alien projectiles
+            alienProjectiles.forEach((p, index) => {
+                p.update();
+                if (p.y > GAME_HEIGHT) {
+                    alienProjectiles.splice(index, 1);
+                }
+            });
+
+            // Update invaders
+            let hitEdge = false;
+            invaders.forEach(invader => {
+                invader.x += invaderSpeed * invaderDirection;
+                if (invader.x + invader.width >= GAME_WIDTH || invader.x <= 0) {
+                    hitEdge = true;
+                }
+                // Check for game over (invaders reach player)
+                if (invader.y + invader.height >= player.y) {
+                    gameOver = true;
+                }
+                 // Alien shooting
+                if (Math.random() < alienShootChance) {
+                    // Use a positive speed to move down
+                    alienProjectiles.push(new Projectile(invader.x + invader.width / 2 - 2.5, invader.y + invader.height, '#ff4500', 5));
+                }
+            });
+
+            if (hitEdge) {
+                invaderDirection *= -1;
+                invaders.forEach(invader => invader.y += invaderDrop);
+            }
+
+            // --- Collision Detection ---
+
+            // Player Projectiles vs Invaders
+            projectiles.forEach((projectile, pIndex) => {
+                invaders.forEach((invader, iIndex) => {
+                    if (
+                        projectile.x < invader.x + invader.width &&
+                        projectile.x + projectile.width > invader.x &&
+                        projectile.y < invader.y + invader.height &&
+                        projectile.y + projectile.height > invader.y
+                    ) {
+                        projectiles.splice(pIndex, 1);
+                        invaders.splice(iIndex, 1);
+                        score += 10;
+                        scoreElement.textContent = score;
+                    }
+                });
+            });
+            
+            // Player Projectiles vs Barriers
+            projectiles.forEach((projectile, pIndex) => {
+                barriers.forEach((block, bIndex) => {
+                    if (block.health > 0 && 
+                        projectile.x < block.x + block.width &&
+                        projectile.x + projectile.width > block.x &&
+                        projectile.y < block.y + block.height &&
+                        projectile.y + projectile.height > block.y
+                        ) {
+                            projectiles.splice(pIndex, 1);
+                            block.health--;
+                    }
+                });
+            });
+
+            // Alien Projectiles vs Barriers
+            alienProjectiles.forEach((projectile, pIndex) => {
+                barriers.forEach((block, bIndex) => {
+                     if (block.health > 0 &&
+                        projectile.x < block.x + block.width &&
+                        projectile.x + projectile.width > block.x &&
+                        projectile.y < block.y + block.height &&
+                        projectile.y + projectile.height > block.y
+                        ) {
+                            alienProjectiles.splice(pIndex, 1);
+                            block.health--;
+                    }
+                });
+            });
+
+            // Alien Projectiles vs Player
+            alienProjectiles.forEach((projectile, pIndex) => {
+                if (
+                    projectile.x < player.x + player.width &&
+                    projectile.x + projectile.width > player.x &&
+                    projectile.y < player.y + player.height &&
+                    projectile.y + projectile.height > player.y
+                ) {
+                    alienProjectiles.splice(pIndex, 1);
+                    player.loseLife();
+                }
+            });
+
+            // Check for win condition
+            if (invaders.length === 0) {
+                 alert("You Win! Next Level...");
+                 init(); 
+            }
+        }
+
+        function draw() {
+            // Clear canvas
+            ctx.clearRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
+
+            // Draw player
+            player.draw();
+
+            // Draw barriers
+            barriers.forEach(b => b.draw());
+
+            // Draw projectiles
+            projectiles.forEach(p => p.draw());
+
+            // Draw alien projectiles
+            alienProjectiles.forEach(p => p.draw());
+
+            // Draw invaders
+            invaders.forEach(i => i.draw());
+        }
+
+        // --- Event Listeners for Controls ---
+        window.addEventListener('keydown', (e) => {
+            keys[e.key] = true;
+
+            if ((e.key === ' ' || e.key === 'ArrowUp' || e.key === 'w') && projectiles.length < 5) { // Limit projectiles on screen
+                projectiles.push(new Projectile(player.x + player.width / 2 - 2.5, player.y));
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            keys[e.key] = false;
+        });
+        
+        function restartGame() {
+            cancelAnimationFrame(animationFrameId);
+            init();
+            gameLoop();
+        }
+
+        // --- Start the game ---
+        window.onload = function() {
+            init();
+            gameLoop();
+        };
+
+    </script>
+</body>
+</html>
