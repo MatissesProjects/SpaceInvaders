@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Space Invaders - Full NEAT</title>
+    <!-- TensorFlow.js is still useful for fast tensor math, even without models -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <style>
+        body { margin: 0; padding: 10px; display: flex; flex-direction: column; align-items: center; background-color: #111; color: #fff; font-family: 'Courier New', Courier, monospace; }
+        #controls { margin-bottom: 10px; display: flex; flex-direction: column; gap: 10px; align-items: center; width: 80%; }
+        .control-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 15px; align-items: center; }
+        #controls button { padding: 10px 20px; font-size: 16px; background-color: #3f3; border: 2px solid #3f3; color: #000; cursor: pointer; box-shadow: 0 0 10px #3f3; }
+        #info { font-size: 18px; }
+        .slider-container { display: flex; align-items: center; gap: 5px; font-size: 14px; }
+        #game-grid { display: grid; gap: 15px; grid-template-columns: repeat(4, 1fr); }
+        .game-instance { position: relative; }
+        .game-instance canvas { border: 1px solid #3f3; display: block; }
+        .instance-overlay { position: absolute; top: 5px; left: 5px; color: #3f3; font-size: 12px; pointer-events: none; }
+    </style>
+</head>
+<body>
+    <div id="controls">
+        <div class="control-row">
+            <button onclick="startTraining()">Start Training</button>
+            <button onclick="pauseTraining()">Pause/Resume</button>
+            <div id="info">
+                <span>GEN: <span id="generation-count">0</span></span> |
+                <span>BEST: <span id="best-fitness">0</span></span> |
+                <span>SPECIES: <span id="species-count">0</span></span>
+            </div>
+        </div>
+        <div class="control-row">
+             <div class="slider-container">
+                 <label for="gameSpeed">Game Speed:</label>
+                <input type="range" id="gameSpeed" min="1" max="100" step="1" value="1" oninput="updateGAVars()">
+                <span id="gameSpeedValue">1</span>
+            </div>
+        </div>
+    </div>
+    <div id="game-grid"></div>
+
+    <script>
+        // --- GA & Game Configuration ---
+        let POPULATION_SIZE = 20;
+        let gameSpeed = 1;
+        const INPUT_COUNT = 9;
+        const OUTPUT_COUNT = 3;
+        const COMPATIBILITY_THRESHOLD = 3.0;
+        
+        // --- Mutation Rates ---
+        const MUTATE_WEIGHT_CHANCE = 0.8;
+        const ADD_CONNECTION_CHANCE = 0.05;
+        const ADD_NODE_CHANCE = 0.03;
+
+        // --- Global NEAT variables ---
+        let innovationHistory = {}; // Tracks innovations to assign correct numbers
+        let nextInnovationNumber = 0;
+
+        let population;
+        let gameInstances = [];
+        let animationFrameId;
+        let isPaused = false;
+        let generation = 0;
+
+        // --- Core Game Logic (Unchanged) ---
+        class Game {
+            constructor(canvas) { this.canvas = canvas; this.ctx = canvas.getContext('2d'); this.init(); }
+            init() { this.player={x:200/2-12.5,y:150-30,width:25,height:15,lives:3};this.invaders=[];this.projectiles=[];this.alienProjectiles=[];this.barriers=[];this.score=0;this.fitness=0;this.frames=0;this.gameOver=false;this.invaderDirection=1;this.invaderSpeed=0.25;this.lastPlayerX=this.player.x;this.consecutiveShotsWhileStill=0;this.positionBucketSize=10;this.positionsVisited=new Set([Math.floor(this.player.x/this.positionBucketSize)]);for(let r=0;r<3;r++){for(let c=0;c<5;c++){this.invaders.push({x:c*30+30,y:r*20+20,width:20,height:15})}}for(let i=0;i<4;i++){const bX=i*45+20;for(let j=0;j<9;j++){this.barriers.push({x:bX+(j%3)*5,y:150-45+Math.floor(j/3)*5,width:5,height:5,health:4})}}}
+            update(action){if(this.gameOver)return;this.frames++;if(this.player.x!==this.lastPlayerX){this.consecutiveShotsWhileStill=0}if(action==='left')this.player.x-=5;if(action==='right')this.player.x+=5;if(action==='shoot'&&this.projectiles.length<3){this.projectiles.push({x:this.player.x+this.player.width/2-2.5,y:this.player.y,speed:-5,hit:false});this.consecutiveShotsWhileStill=(this.player.x===this.lastPlayerX)?this.consecutiveShotsWhileStill+1:1;this.fitness-=0.5*this.consecutiveShotsWhileStill}this.player.x=Math.max(0,Math.min(200-this.player.width,this.player.x));const cPB=Math.floor(this.player.x/this.positionBucketSize);if(!this.positionsVisited.has(cPB)){this.positionsVisited.add(cPB);this.fitness+=2}this.projectiles.forEach((p,i)=>{p.y+=p.speed;if(p.y<0&&!p.hit){this.fitness-=3;this.projectiles.splice(i,1)}});this.alienProjectiles.forEach((p,i)=>{const oY=p.y;p.y+=p.speed;if(oY<this.player.y&&p.y>=this.player.y){this.handleDodge(p)}if(p.y>150){this.alienProjectiles.splice(i,1)}});let hE=false;this.invaders.forEach(inv=>{inv.x+=this.invaderSpeed*this.invaderDirection;if(inv.x<=0||inv.x+inv.width>=200)hE=true;if(inv.y+inv.height>=this.player.y)this.endGame();if(Math.random()<0.004){this.alienProjectiles.push({x:inv.x+inv.width/2,y:inv.y+inv.height,speed:2.5})}});if(hE){this.invaderDirection*=-1;this.invaders.forEach(inv=>inv.y+=5)}this.projectiles.forEach((p,pi)=>{if(p.hit)return;this.invaders.forEach((inv,ii)=>{if(this.isColliding(p,inv)){p.hit=true;this.projectiles.splice(pi,1);this.invaders.splice(ii,1);this.score+=1;this.fitness+=15}});this.barriers.forEach(b=>{if(b.health>0&&this.isColliding(p,b)){p.hit=true;this.projectiles.splice(pi,1);b.health--}})});this.alienProjectiles.forEach((p,pi)=>{if(this.isColliding(p,this.player)){this.alienProjectiles.splice(pi,1);this.player.lives--;this.fitness-=50;if(this.player.lives<=0)this.endGame();return}this.barriers.forEach(b=>{if(b.health>0&&this.isColliding(p,b)){this.alienProjectiles.splice(pi,1);b.health--}})});if(this.invaders.length===0){this.score+=1000;this.fitness+=1500;this.endGame()}this.lastPlayerX=this.player.x}
+            handleDodge(p){this.fitness+=0.1}
+            draw(){this.ctx.fillStyle='#000';this.ctx.fillRect(0,0,200,150);this.ctx.fillStyle='#3f3';this.ctx.fillRect(this.player.x,this.player.y,this.player.width,this.player.height);this.ctx.fillStyle='#f0f';this.invaders.forEach(i=>this.ctx.fillRect(i.x,i.y,i.width,i.height));this.barriers.forEach(b=>{if(b.health>0){this.ctx.fillStyle=`rgba(63,255,63,${b.health*0.25})`;this.ctx.fillRect(b.x,b.y,b.width,b.height)}});this.ctx.fillStyle='#ff0';this.projectiles.forEach(p=>this.ctx.fillRect(p.x,p.y,5,10));this.ctx.fillStyle='#ff4500';this.alienProjectiles.forEach(p=>this.ctx.fillRect(p.x,p.y,5,10))}
+            isColliding(a,b){if(!a||!b)return false;return a.x<b.x+b.width&&a.x+(a.width||5)>b.x&&a.y<b.y+b.height&&a.y+(a.height||10)>b.y}
+            endGame(){if(this.gameOver)return;this.gameOver=true;this.fitness+=this.frames;this.fitness+=this.player.lives*100}
+        }
+        
+        // --- Full NEAT Implementation ---
+
+        // Represents a single neuron in the network
+        class NodeGene {
+            constructor(id, type) {
+                this.id = id;
+                this.type = type; // 'input', 'hidden', 'output'
+                this.outputValue = 0; // For activation
+                this.inputSum = 0; // Sum of inputs before activation
+            }
+
+            // Sigmoid activation function
+            activate() {
+                this.outputValue = 1 / (1 + Math.exp(-4.9 * this.inputSum));
+            }
+        }
+
+        // Represents a connection between two neurons
+        class ConnectionGene {
+            constructor(from, to, weight, innovation) {
+                this.from = from;
+                this.to = to;
+                this.weight = weight;
+                this.enabled = true;
+                this.innovation = innovation;
+            }
+
+            clone() {
+                return new ConnectionGene(this.from, this.to, this.weight, this.innovation);
+            }
+        }
+        
+        // The new Genome class, representing the network's structure and weights
+        class Genome {
+            constructor(existingGenome) {
+                this.nodes = [];
+                this.connections = [];
+                this.fitness = 0;
+
+                if(existingGenome) {
+                     // Clone an existing genome
+                    this.nodes = existingGenome.nodes.map(n => new NodeGene(n.id, n.type));
+                    this.connections = existingGenome.connections.map(c => c.clone());
+                } else {
+                    // Create a minimal starting genome
+                    for (let i = 0; i < INPUT_COUNT + 1; i++) { // +1 for bias node
+                        this.nodes.push(new NodeGene(i, 'input'));
+                    }
+                    for (let i = 0; i < OUTPUT_COUNT; i++) {
+                        this.nodes.push(new NodeGene(INPUT_COUNT + 1 + i, 'output'));
+                    }
+                    // Minimal connections
+                    for (let i = 0; i < INPUT_COUNT + 1; i++) {
+                        for (let j = 0; j < OUTPUT_COUNT; j++) {
+                           const conn = new ConnectionGene(i, INPUT_COUNT + 1 + j, Math.random() * 2 - 1, getInnovationNumber(i, INPUT_COUNT + 1 + j));
+                           this.connections.push(conn);
+                        }
+                    }
+                }
+            }
+
+            // Propagate inputs through the network to get an output
+            predict(inputs) {
+                // Set input node values
+                for (let i = 0; i < INPUT_COUNT; i++) {
+                    this.nodes[i].outputValue = inputs[i];
+                }
+                this.nodes[INPUT_COUNT].outputValue = 1; // Bias node
+
+                // Activate network
+                const network = this.buildNetwork();
+                for (const node of network) {
+                    node.inputSum = 0;
+                }
+                for(const node of network) {
+                    for(const conn of this.connections) {
+                        if(conn.enabled && conn.from === node.id) {
+                            const toNode = this.nodes.find(n => n.id === conn.to);
+                            toNode.inputSum += node.outputValue * conn.weight;
+                        }
+                    }
+                }
+
+                for (const node of this.nodes) {
+                    if (node.type !== 'input') {
+                        node.activate();
+                    }
+                }
+
+                // Get output values
+                const outputValues = this.nodes.filter(n => n.type === 'output').map(n => n.outputValue);
+                const maxOutputIndex = outputValues.indexOf(Math.max(...outputValues));
+                const actions = ['left', 'right', 'shoot'];
+                return actions[maxOutputIndex];
+            }
+            
+            // Build a feed-forward network from the genome
+            buildNetwork() {
+                 const network = [];
+                 for (const node of this.nodes) {
+                     if (node.type === 'input') {
+                         network.push(node);
+                     }
+                 }
+                 // This is a simplified topological sort for feed-forward networks
+                 // A full implementation would handle recurrent connections.
+                 const hiddenAndOutputNodes = this.nodes.filter(n => n.type !== 'input');
+                 let nodesToAdd = hiddenAndOutputNodes.length;
+                 while(nodesToAdd > 0) {
+                     for(const node of hiddenAndOutputNodes) {
+                         if(network.includes(node)) continue;
+                         const incomingConnections = this.connections.filter(c => c.to === node.id && c.enabled);
+                         const allInputsInNetwork = incomingConnections.every(c => network.some(n => n.id === c.from));
+                         if(allInputsInNetwork) {
+                             network.push(node);
+                             nodesToAdd--;
+                         }
+                     }
+                 }
+                 return network;
+            }
+        }
+        
+        // --- Population now manages the NEAT algorithm ---
+        class Population {
+            constructor(size) {
+                this.genomes = [];
+                for (let i = 0; i < size; i++) { this.genomes.push(new Genome()); }
+                this.species = [];
+                this.allTimeBestGenome = null;
+                this.nextSpeciesId = 0;
+            }
+
+            async evolve() {
+                // Speciation, fitness sharing, reproduction
+                await this.speciate();
+                
+                // Sort genomes by fitness for reporting
+                const sortedGenomes = [...this.genomes].sort((a,b) => b.fitness - a.fitness);
+
+                if(!this.allTimeBestGenome || sortedGenomes[0].fitness > this.allTimeBestGenome.fitness) {
+                    this.allTimeBestGenome = new Genome(sortedGenomes[0]);
+                }
+                document.getElementById('best-fitness').textContent = this.allTimeBestGenome.fitness.toFixed(0);
+                
+                // Calculate adjusted fitness and create the next generation
+                const newGeneration = [];
+                // Elitism: The champion of the best species is carried over
+                if(this.species.length > 0) {
+                    this.species.sort((a,b) => b.members.sort((ga,gb)=>gb.fitness-ga.fitness)[0].fitness - a.members.sort((ga,gb)=>gb.fitness-ga.fitness)[0].fitness);
+                    newGeneration.push(new Genome(this.species[0].members[0]));
+                }
+                
+                // Fill the rest of the population
+                while(newGeneration.length < POPULATION_SIZE) {
+                    const species = this.selectSpecies();
+                    const parent1 = this.selectParent(species);
+                    const parent2 = this.selectParent(species);
+                    
+                    let child;
+                    if(parent1.fitness > parent2.fitness) {
+                        child = this.crossover(parent1, parent2);
+                    } else {
+                        child = this.crossover(parent2, parent1);
+                    }
+                    this.mutate(child);
+                    newGeneration.push(child);
+                }
+                
+                this.genomes = newGeneration;
+                generation++;
+                document.getElementById('generation-count').textContent = generation;
+                document.getElementById('species-count').textContent = this.species.length;
+            }
+            
+            async speciate() {
+                // Clear old species
+                for(const s of this.species) { s.members = []; }
+                
+                for(const genome of this.genomes) {
+                    let foundSpecies = false;
+                    for(const s of this.species) {
+                        const distance = this.calculateDistance(genome, s.representative);
+                        if(distance < COMPATIBILITY_THRESHOLD) {
+                            s.members.push(genome);
+                            foundSpecies = true;
+                            break;
+                        }
+                    }
+                    if(!foundSpecies) {
+                        const newSpecies = {
+                            id: this.nextSpeciesId++,
+                            representative: new Genome(genome),
+                            members: [genome]
+                        };
+                        this.species.push(newSpecies);
+                    }
+                }
+                // Remove empty species and reset representatives
+                this.species = this.species.filter(s => s.members.length > 0);
+                for(const s of this.species) {
+                    s.representative = new Genome(s.members[Math.floor(Math.random() * s.members.length)]);
+                }
+            }
+
+            calculateDistance(genome1, genome2) {
+                let disjoint = 0;
+                let excess = 0;
+                let weightDiff = 0;
+                let matching = 0;
+
+                const innovations1 = genome1.connections.map(c => c.innovation);
+                const innovations2 = genome2.connections.map(c => c.innovation);
+                const maxInnovation = Math.max(...innovations1, ...innovations2);
+
+                for(let i = 0; i <= maxInnovation; i++) {
+                    const conn1 = genome1.connections.find(c => c.innovation === i);
+                    const conn2 = genome2.connections.find(c => c.innovation === i);
+                    if(conn1 && conn2) {
+                        matching++;
+                        weightDiff += Math.abs(conn1.weight - conn2.weight);
+                    } else if (conn1 || conn2) {
+                        if (i > Math.min(Math.max(...innovations1), Math.max(...innovations2))) {
+                            excess++;
+                        } else {
+                            disjoint++;
+                        }
+                    }
+                }
+                // NEAT distance formula
+                return (1 * disjoint + 1 * excess) / Math.max(innovations1.length, innovations2.length) + 0.5 * (weightDiff / matching || 1);
+            }
+
+            crossover(parent1, parent2) {
+                const child = new Genome();
+                child.nodes = parent1.nodes.map(n => new NodeGene(n.id, n.type)); // Start with more fit parent's nodes
+                child.connections = [];
+
+                parent1.connections.forEach(conn1 => {
+                    const conn2 = parent2.connections.find(c => c.innovation === conn1.innovation);
+                    if(conn2) { // Matching gene
+                        const chosenConn = Math.random() < 0.5 ? conn1 : conn2;
+                        child.connections.push(chosenConn.clone());
+                    } else { // Disjoint/Excess gene
+                        child.connections.push(conn1.clone());
+                    }
+                });
+                return child;
+            }
+
+            mutate(genome) {
+                if (Math.random() < MUTATE_WEIGHT_CHANCE) {
+                    for (const conn of genome.connections) {
+                        if (Math.random() < 0.1) {
+                            conn.weight = Math.random() * 2 - 1; // Assign new weight
+                        } else {
+                            conn.weight += (Math.random() * 0.4 - 0.2); // Perturb weight
+                        }
+                    }
+                }
+                if (Math.random() < ADD_CONNECTION_CHANCE) {
+                    const node1 = genome.nodes[Math.floor(Math.random() * genome.nodes.length)];
+                    const node2 = genome.nodes[Math.floor(Math.random() * genome.nodes.length)];
+                    
+                    if (node1.type !== 'output' && node2.type !== 'input' && node1.id !== node2.id) {
+                        const reversed = genome.connections.some(c => c.from === node2.id && c.to === node1.id);
+                        const exists = genome.connections.some(c => c.from === node1.id && c.to === node2.id);
+                        if (!exists && !reversed) {
+                            const newConn = new ConnectionGene(node1.id, node2.id, Math.random() * 2 - 1, getInnovationNumber(node1.id, node2.id));
+                            genome.connections.push(newConn);
+                        }
+                    }
+                }
+                if (Math.random() < ADD_NODE_CHANCE && genome.connections.length > 0) {
+                    const connToSplit = genome.connections[Math.floor(Math.random() * genome.connections.length)];
+                    connToSplit.enabled = false;
+                    
+                    const newNodeId = Math.max(...genome.nodes.map(n => n.id)) + 1;
+                    const newNode = new NodeGene(newNodeId, 'hidden');
+                    genome.nodes.push(newNode);
+
+                    const toNew = new ConnectionGene(connToSplit.from, newNode.id, 1, getInnovationNumber(connToSplit.from, newNode.id));
+                    const fromNew = new ConnectionGene(newNode.id, connToSplit.to, connToSplit.weight, getInnovationNumber(newNode.id, connToSplit.to));
+                    genome.connections.push(toNew, fromNew);
+                }
+            }
+            
+            selectSpecies() {
+                const totalFitness = this.species.reduce((sum, s) => sum + s.members.reduce((sSum, m) => sSum + m.fitness, 0), 0);
+                const rand = Math.random() * totalFitness;
+                let currentSum = 0;
+                for (const s of this.species) {
+                    for(const m of s.members) {
+                        currentSum += m.fitness;
+                        if (currentSum > rand) return s;
+                    }
+                }
+                return this.species[0]; // Fallback
+            }
+
+            selectParent(species) {
+                const totalFitness = species.members.reduce((sum, m) => sum + m.fitness, 0);
+                const rand = Math.random() * totalFitness;
+                let currentSum = 0;
+                for (const m of species.members) {
+                    currentSum += m.fitness;
+                    if (currentSum > rand) return m;
+                }
+                return species.members[0]; // Fallback
+            }
+        }
+
+        // --- Helper for NEAT Innovations ---
+        function getInnovationNumber(from, to) {
+            const key = `${from}-${to}`;
+            if (innovationHistory[key] === undefined) {
+                innovationHistory[key] = nextInnovationNumber++;
+            }
+            return innovationHistory[key];
+        }
+
+
+        // --- Main Control Loop ---
+        async function mainLoop() {
+            if (isPaused) { animationFrameId = requestAnimationFrame(mainLoop); return; }
+            
+            for (let s = 0; s < gameSpeed; s++) {
+                // generationFrames++;
+                let allGamesOver = true;
+
+                for (let i = 0; i < POPULATION_SIZE; i++) {
+                    const game = gameInstances[i];
+                    if (game.gameOver) continue;
+                    
+                    allGamesOver = false;
+
+                    const inputs = Object.values(getGameInputs(game));
+                    const genome = population.genomes[i];
+                    const action = genome.predict(inputs);
+                    game.update(action);
+                }
+
+                if (allGamesOver) {
+                    for(let i = 0; i < POPULATION_SIZE; i++) { population.genomes[i].fitness = gameInstances[i].fitness; }
+                    
+                    await population.evolve();
+                    
+                    for(let i = 0; i < POPULATION_SIZE; i++) { gameInstances[i].init(); }
+                    break;
+                }
+            }
+            
+            for (let i = 0; i < POPULATION_SIZE; i++) {
+                if(!gameInstances[i].gameOver) gameInstances[i].draw();
+                const overlay = document.getElementById(`overlay-${i}`);
+                overlay.textContent = `Fitness: ${gameInstances[i].fitness.toFixed(0)} | Lives: ${gameInstances[i].player.lives}`;
+            }
+
+            animationFrameId = requestAnimationFrame(mainLoop);
+        }
+
+        function getGameInputs(game) { /* Unchanged from previous version */ let cI={x:200,y:150},mID=Infinity;game.invaders.forEach(i=>{const d=Math.hypot(game.player.x-i.x,game.player.y-i.y);if(d<mID){mID=d;cI=i;}});let cB={x:0,health:0},mBD=Infinity;game.barriers.forEach(b=>{if(b.health>0){const d=Math.abs(game.player.x-b.x);if(d<mBD){mBD=d;cB=b;}}});let iIS=0;for(const inv of game.invaders){if(inv.x<game.player.x+game.player.width&&inv.x+inv.width>game.player.x){iIS=1;break;}}let iH=0;const pC=game.player.x+game.player.width/2;for(const b of game.barriers){if(b.health>0&&pC>b.x&&pC<b.x+b.width){iH=1;break;}}let cAP={x:0,y:0};let mAPD=Infinity;game.alienProjectiles.forEach(p=>{const dist=Math.hypot(game.player.x-p.x,game.player.y-p.y);if(dist<mAPD){mAPD=dist;cAP=p;}});return{playerX:(game.player.x/200)*2-1,closestInvaderX:((cI.x-game.player.x)/200),closestInvaderY:((cI.y-game.player.y)/150),closestBarrierHealth:cB.health/4,closestBarrierDistX:((cB.x-game.player.x)/200),invaderInSights:iIS,isHiding:iH,closestBulletX:game.alienProjectiles.length>0?(cAP.x-game.player.x)/200:0,closestBulletY:game.alienProjectiles.length>0?(cAP.y-game.player.y)/150:0};}
+
+        // --- UI Functions ---
+        function updateGAVars() { gameSpeed = parseInt(document.getElementById('gameSpeed').value); document.getElementById('gameSpeedValue').textContent = gameSpeed; }
+        function setupUI() { const g=document.getElementById('game-grid');g.innerHTML='';g.style.gridTemplateColumns=`repeat(4, 1fr)`;updateGAVars();for(let i=0;i<POPULATION_SIZE;i++){const d=document.createElement('div');d.className='game-instance';const c=document.createElement('canvas');c.width=200;c.height=150;const o=document.createElement('div');o.className='instance-overlay';o.id=`overlay-${i}`;o.textContent='Fitness: 0 | Lives: 3';d.appendChild(c);d.appendChild(o);g.appendChild(d);gameInstances.push(new Game(c));} }
+
+        async function startTraining() {
+            if (animationFrameId) { cancelAnimationFrame(animationFrameId); }
+            isPaused = false;
+            generation = 0;
+            innovationHistory = {};
+            nextInnovationNumber = 0;
+            population = new Population(POPULATION_SIZE);
+            gameInstances = [];
+            setupUI();
+            await mainLoop();
+        }
+
+        function pauseTraining() { isPaused = !isPaused; }
+        window.onload = () => { tf.ready().then(() => { population = new Population(POPULATION_SIZE); setupUI(); }); };
+    </script>
+</body>
+</html>
