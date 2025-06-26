@@ -20,59 +20,81 @@
         #visualization-container { padding: 10px; border: 2px solid #3f3; background-color: #000; box-shadow: 0 0 15px #3f3; width: 400px; }
         #visualization-container h3 { text-align: center; margin-top: 0; }
         #network-stats { margin-top: 15px; font-size: 14px; white-space: pre-wrap; }
+        #species-networks-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 10px; }
+        .species-architecture-item { border: 1px solid #555; padding: 5px; border-radius: 5px; background-color: #222; }
+        .species-architecture-item h3 { font-size: 14px; margin-top: 5px; margin-bottom: 5px; }
+        .species-architecture-item .network-svg { width: 100%; height: 150px; } /* Adjust height as needed */
+        .species-architecture-item .network-stats { font-size: 10px; white-space: pre-wrap; }
     </style>
 </head>
 <body>
     <div id="controls">
         <div class="control-row">
-            <button onclick="startTraining()">Start Training</button>
-            <button onclick="pauseTraining()">Pause/Resume</button>
+            <button id="startButton">Start Training</button>
+            <button id="pauseButton">Pause/Resume</button>
             <div id="info">
-                <span>GEN: <span id="generation-count">0</span></span> |
+                <span>GEN: <span id="generation-count">1</span></span> |
                 <span>BEST: <span id="best-fitness">0</span></span> |
-                <span>SPECIES: <span id="species-count">0</span></span> |
-                <span>TIME: <span id="time-limit">25</span>s</span>
+                <span>SPECIES: <span id="species-count">1</span></span> |
+                <span>TIME: <span id="time-limit">25.0</span>s</span> |
+                <span id="render-status">RENDERING</span>
             </div>
         </div>
         <div class="control-row">
              <div class="slider-container">
                  <label for="gameSpeed">Game Speed:</label>
-                <input type="range" id="gameSpeed" min="1" max="100" step="1" value="1" oninput="updateGAVars()">
+                <input type="range" id="gameSpeed" min="1" max="100" step="1" value="1">
                 <span id="gameSpeedValue">1</span>
             </div>
              <div class="slider-container">
                  <label for="layerParamMutationChance">Layer Param Mut. %:</label>
-                <input type="range" id="layerParamMutationChance" min="0" max="1" step="0.01" value="0.3" oninput="updateGAVars()">
+                <input type="range" id="layerParamMutationChance" min="0" max="1" step="0.01" value="0.3">
                 <span id="layerParamMutationChanceValue">0.30</span>
             </div>
             <div class="slider-container">
                  <label for="topologyMutationChance">Topology Mut. %:</label>
-                <input type="range" id="topologyMutationChance" min="0" max="0.5" step="0.01" value="0.1" oninput="updateGAVars()">
+                <input type="range" id="topologyMutationChance" min="0" max="0.5" step="0.01" value="0.1">
                 <span id="topologyMutationChanceValue">0.10</span>
+            </div>
+            <div class="slider-container">
+                <label for="learningRate">Learning Rate:</label>
+                <input type="range" id="learningRate" min="0.0001" max="0.01" step="0.0001" value="0.001">
+                <span id="learningRateValue">0.0010</span>
+            </div>
+            <div class="slider-container">
+                <label for="trainingEpochs">Training Epochs:</label>
+                <input type="range" id="trainingEpochs" min="1" max="10" step="1" value="1">
+                <span id="trainingEpochsValue">1">
             </div>
         </div>
     </div>
     <div id="main-container">
         <div id="game-grid"></div>
         <div id="visualization-container">
-            <h3>All-Time Best Architecture</h3>
-            <svg id="network-svg" width="400" height="400"></svg>
-            <div id="network-stats">
-                <p>Initializing...</p>
+            <div id="all-time-best-architecture">
+                <h3>All-Time Best Architecture</h3>
+                <svg id="network-svg" width="400" height="400"></svg>
+                <div id="network-stats">
+                    <p>Initializing...</p>
+                </div>
+            </div>
+            <div id="species-visualization-container">
+                <h3>Top Species Architectures</h3>
+                <div id="species-networks-grid"></div>
             </div>
         </div>
     </div>
 
     <script>
         // --- Config ---
-        let POPULATION_SIZE = 20;
+        let POPULATION_SIZE = 8;//20;
         let gameSpeed = 1;
         const FPS = 60;
         const IMG_WIDTH = 40;
         const IMG_HEIGHT = 30;
         const COMPATIBILITY_THRESHOLD = 1.2;
 
-        // Mutation rates (will be controlled by sliders)
+        // Mutation rates
         let MUTATE_WEIGHT_CHANCE = 0.8;
         let MUTATE_LAYER_PARAM_CHANCE = 0.3;
         let ADD_LAYER_CHANCE = 0.1;
@@ -87,64 +109,141 @@
         let generationFrames = 0;
         let generationTimeLimit = 25;
 
+        let learningRate = 0.001;
+        let trainingEpochs = 1;
+
         // --- Core Game Logic ---
         class Game {
-            constructor(canvas) {
+            constructor(canvas, genome, generationTimeLimit, generationFrames) {
                 this.canvas = canvas;
                 this.ctx = canvas.getContext('2d', { willReadFrequently: true });
+                this.genome = genome; // Store the genome reference
+                this.generationTimeLimit = generationTimeLimit;
+                this.generationFrames = generationFrames;
                 this.init();
             }
 
             init() {
                 this.player = { x: 200 / 2 - 12.5, y: 150 - 30, width: 25, height: 15, lives: 3 };
+                this.initialInvadersCount = 15; // 3 rows * 5 columns
                 this.invaders = []; this.projectiles = []; this.alienProjectiles = []; this.barriers = [];
                 this.fitness = 0; this.frames = 0; this.enemiesKilled = 0; this.framesIdle = 0; this.gameOver = false;
                 this.win = false; this.invaderDirection = 1; this.invaderSpeed = 0.25;
+                this.shotsFired = 0; this.shotsHit = 0; this.damageTaken = 0; this.barriersHit = 0;
+                this.playerXMovement = 0; this.playerYMovement = 0;
+                this.lastPlayerX = this.player.x; this.lastPlayerY = this.player.y;
+                this.history = [];
+                this.frameHistory = []; // Stores last 4 grayscale frames
                 for (let r = 0; r < 3; r++) { for (let c = 0; c < 5; c++) { this.invaders.push({ x: c * 30 + 30, y: r * 20 + 20, width: 20, height: 15 }); } }
                 for (let i = 0; i < 4; i++) { const bX = i * 45 + 20; for (let j = 0; j < 9; j++) { this.barriers.push({ x: bX + (j % 3) * 5, y: 150 - 45 + Math.floor(j / 3) * 5, width: 5, height: 5, health: 4 }); } }
             }
 
-            update(action) {
+            update(action, stateData) {
                 if (this.gameOver) return;
                 this.frames++;
+                this.history.push({state: stateData, action: action});
+
                 if (action === 'stay') this.framesIdle++;
+                const prevPlayerX = this.player.x;
+                const prevPlayerY = this.player.y;
+
                 if (action === 'left') this.player.x -= 5;
                 if (action === 'right') this.player.x += 5;
-                if (action === 'shoot' && this.projectiles.length < 3) {
-                    this.projectiles.push({ x: this.player.x + this.player.width / 2 - 2.5, y: this.player.y, speed: -5, hit: false });
+                if (action === 'shoot' && this.projectiles.length < 3) { 
+                    this.projectiles.push({ x: this.player.x + this.player.width / 2 - 2.5, y: this.player.y, speed: -5, hit: false }); 
+                    this.shotsFired++;
                 }
                 this.player.x = Math.max(0, Math.min(200 - this.player.width, this.player.x));
+                this.playerXMovement += Math.abs(this.player.x - prevPlayerX);
+                this.playerYMovement += Math.abs(this.player.y - prevPlayerY);
+
                 this.projectiles.forEach((p, i) => { p.y += p.speed; if (p.y < 0 && !p.hit) { this.fitness -= 2; this.projectiles.splice(i, 1); } });
-                this.alienProjectiles.forEach((p, i) => {
-                    const oY = p.y;
-                    p.y += p.speed;
-                    if (oY < this.player.y && p.y >= this.player.y) { this.fitness += 0.5; }
-                    if (p.y > 150) { this.alienProjectiles.splice(i, 1); }
-                });
+                this.alienProjectiles.forEach((p, i) => { const oY = p.y; p.y += p.speed; if (oY < this.player.y && p.y >= this.player.y) { this.fitness += 0.5; } if (p.y > 150) { this.alienProjectiles.splice(i, 1); } });
                 let hE = false;
                 this.invaders.forEach(inv => { inv.x += this.invaderSpeed * this.invaderDirection; if (inv.x <= 0 || inv.x + inv.width >= 200) hE = true; if (inv.y + inv.height >= this.player.y) this.endGame(); if (Math.random() < 0.004) { this.alienProjectiles.push({ x: inv.x + inv.width / 2, y: inv.y + inv.height, speed: 2.5 }); } });
                 if (hE) { this.invaderDirection *= -1; this.invaders.forEach(inv => inv.y += 5); }
-                this.projectiles.forEach((p, pi) => {
-                    if (p.hit) return;
-                    this.invaders.forEach((inv, ii) => { if (this.isColliding(p, inv)) { p.hit = true; this.projectiles.splice(pi, 1); this.invaders.splice(ii, 1); this.enemiesKilled++; this.fitness += 5; } });
-                    this.barriers.forEach(b => { if (b.health > 0 && this.isColliding(p, b)) { p.hit = true; this.projectiles.splice(pi, 1); b.health--; } });
-                });
-                this.alienProjectiles.forEach((p, pi) => {
-                    if (this.isColliding(p, this.player)) { this.alienProjectiles.splice(pi, 1); this.player.lives--; this.fitness -= 20; if (this.player.lives <= 0) this.endGame(); return; }
-                    this.barriers.forEach(b => { if (b.health > 0 && this.isColliding(p, b)) { this.alienProjectiles.splice(pi, 1); b.health--; } });
-                });
-                if (this.invaders.length === 0) {
-                    this.win = true;
+                this.projectiles.forEach((p, pi) => { if (p.hit) return; this.invaders.forEach((inv, ii) => { if (this.isColliding(p, inv)) { p.hit = true; this.projectiles.splice(pi, 1); this.invaders.splice(ii, 1); this.enemiesKilled++; this.fitness += 10; this.shotsHit++; } }); this.barriers.forEach(b => { if (b.health > 0 && this.isColliding(p, b)) { p.hit = true; this.projectiles.splice(pi, 1); b.health--; this.barriersHit++; } }); });
+                this.alienProjectiles.forEach((p, pi) => { if (this.isColliding(p, this.player)) { this.alienProjectiles.splice(pi, 1); this.player.lives--; this.fitness -= 30; this.damageTaken++; if (this.player.lives <= 0) this.endGame(); return; } this.barriers.forEach(b => { if (b.health > 0 && this.isColliding(p, b)) { this.alienProjectiles.splice(pi, 1); b.health--; } }); });
+                if (this.invaders.length === 0) { this.win = true; this.endGame(); }
+
+                // Culling logic: if fitness drops below -100 and only 1 life left, end game
+                if (this.player.lives === 1 && this.fitness < -100) {
                     this.endGame();
                 }
             }
 
             calculateFinalFitness() {
-                const stats = { enemies_killed: this.enemiesKilled, level_reached: this.win ? 1 : 0, frames_survived: this.frames, frames_idle: this.framesIdle, lives_lost: 3 - this.player.lives, };
-                const w = { K: 2.0, L: 10.0, T: 0.05, M: 0.001, D: 5.0 };
-                const finalBonus = (w.K * stats.enemies_killed + w.L * stats.level_reached + w.T * stats.frames_survived - w.M * stats.frames_idle - w.D * stats.lives_lost);
-                this.fitness += finalBonus;
-                this.fitness = Math.max(0, Math.min(this.fitness, 10000));
+                const stats = {
+                    enemies_killed: this.enemiesKilled,
+                    level_reached: this.win ? 1 : 0,
+                    frames_survived: this.frames,
+                    frames_idle: this.framesIdle,
+                    lives_lost: 3 - this.player.lives,
+                    enemies_remaining: this.invaders.length,
+                    shots_fired: this.shotsFired,
+                    shots_hit: this.shotsHit,
+                    damage_taken: this.damageTaken,
+                    player_x_movement: this.playerXMovement,
+                    player_y_movement: this.playerYMovement,
+                    invaders_initial: this.initialInvadersCount,
+                    barriers_hit: this.barriersHit,
+                    time_remaining: Math.max(0, this.generationTimeLimit - (this.frames / FPS)),
+                    lives_remaining: this.player.lives
+                };
+
+                const w = {
+                    K: 50.0,   // Weight for enemies killed (increased)
+                    L: 500.0,  // Weight for level reached (winning the game)
+                    T: 0.5,    // Weight for frames survived (increased)
+                    M: 0.01,   // Penalty for frames idle (reduced)
+                    D: 100.0,  // Penalty for lives lost (increased)
+                    SF: 0.1,   // Penalty for shots fired (discourage spamming)
+                    SH: 20.0,  // Bonus for shots hit (accuracy)
+                    DT: 50.0,  // Penalty for damage taken
+                    PX: 0.05,  // Bonus for player X movement (encourage dodging)
+                    PY: 0.05,  // Bonus for player Y movement (encourage dodging)
+                    IR: 5.0,    // Penalty for invaders remaining (encourage clearing board)
+                    BH: 5.0,     // Penalty for hitting own barriers
+                    TR: 10.0,    // Bonus for time remaining on win
+                    LR: 50.0     // Bonus for lives remaining on win
+                };
+
+                // Base fitness components
+                let finalFitness = (
+                    w.K * stats.enemies_killed +
+                    w.L * stats.level_reached +
+                    w.T * stats.frames_survived
+                );
+
+                // Penalties
+                finalFitness -= w.M * stats.frames_idle;
+                finalFitness -= w.D * stats.lives_lost;
+                finalFitness -= w.SF * stats.shots_fired;
+                finalFitness -= w.DT * stats.damage_taken;
+                finalFitness -= w.IR * stats.enemies_remaining;
+                finalFitness -= w.BH * stats.barriers_hit;
+
+                // Bonuses
+                if (stats.shots_fired > 0) {
+                    finalFitness += w.SH * (stats.shots_hit / stats.shots_fired); // Accuracy bonus
+                }
+                finalFitness += w.PX * stats.player_x_movement;
+                finalFitness += w.PY * stats.player_y_movement;
+
+                // Additional bonus for clearing the board
+                if (this.win) {
+                    finalFitness += 200; // Significant bonus for winning
+                    finalFitness += w.TR * stats.time_remaining; // Bonus for time left
+                    finalFitness += w.LR * stats.lives_remaining; // Bonus for lives left
+                }
+
+                // Encourage efficiency: bonus for killing invaders quickly
+                if (stats.enemies_killed > 0 && stats.frames > 0) { // Ensure frames is not zero
+                    finalFitness += (stats.enemies_killed / stats.frames) * 100; // More kills per frame = better
+                }
+
+                // Cap fitness to prevent runaway values, but allow higher scores
+                this.fitness = Math.max(-1000, Math.min(finalFitness, 50000)); // Allow higher max fitness
             }
 
             draw() {
@@ -154,12 +253,7 @@
                 this.barriers.forEach(b => { if (b.health > 0) { this.ctx.fillStyle = `rgba(63, 255, 63, ${b.health * 0.25})`; this.ctx.fillRect(b.x, b.y, b.width, b.height); } });
                 this.ctx.fillStyle = '#ff0'; this.projectiles.forEach(p => this.ctx.fillRect(p.x, p.y, 5, 10));
                 this.ctx.fillStyle = '#ff4500'; this.alienProjectiles.forEach(p => this.ctx.fillRect(p.x, p.y, 5, 10));
-                
-                if(this.gameOver) {
-                    this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'; this.ctx.fillRect(0, 0, 200, 150); this.ctx.textAlign = 'center';
-                    if (this.win) { this.ctx.fillStyle = '#3f3'; this.ctx.font = '32px "Courier New", Courier, monospace'; this.ctx.fillText('YOU WIN', 100, 80); }
-                    else { this.ctx.fillStyle = 'red'; this.ctx.font = '24px "Courier New", Courier, monospace'; this.ctx.fillText('GAME OVER', 100, 80); }
-                }
+                if(this.gameOver) { this.ctx.fillStyle = 'rgba(0, 0, 0, 0.7)'; this.ctx.fillRect(0, 0, 200, 150); this.ctx.textAlign = 'center'; if (this.win) { this.ctx.fillStyle = '#3f3'; this.ctx.font = '32px "Courier New", Courier, monospace'; this.ctx.fillText('YOU WIN', 100, 80); } else { this.ctx.fillStyle = 'red'; this.ctx.font = '24px "Courier New", Courier, monospace'; this.ctx.fillText('GAME OVER', 100, 80); } }
             }
             isColliding(a, b) { if (!a || !b) return false; return a.x < b.x + b.width && a.x + (a.width || 5) > b.x && a.y < b.y + b.height && a.y + (a.height || 10) > b.y; }
             endGame() { if (this.gameOver) return; this.gameOver = true; this.calculateFinalFitness(); }
@@ -167,30 +261,83 @@
         
         // --- CNN-NEAT Implementation ---
         class LayerGene {
-            constructor(type, params) { this.type = type; this.params = params; }
-            clone() { return new LayerGene(this.type, { ...this.params }); }
+            constructor(type, params, skipInput = []) { 
+                this.type = type; 
+                this.params = params; 
+                this.skipInput = skipInput; // Array of indices of layers whose output should be added
+            }
+            clone() { return new LayerGene(this.type, { ...this.params }, [...this.skipInput]); }
         }
 
         class Genome {
             constructor(existingGenome) {
-                this.layerGenes = []; this.model = null; this.fitness = 0;
-                if (existingGenome) { this.layerGenes = existingGenome.layerGenes.map(lg => lg.clone()); }
-                else {
-                    this.layerGenes.push(new LayerGene('conv2d', { filters: 4, kernelSize: 3, activation: 'relu' }));
+                this.layerGenes = []; 
+                this.model = null; 
+                this.fitness = 0;
+                this.speciesId = -1; // Initialize species ID
+                if (existingGenome) { 
+                    this.layerGenes = existingGenome.layerGenes.map(lg => lg.clone()); 
+                    this.speciesId = existingGenome.speciesId; // Copy species ID
+                } else {
+                    // Initial complex topology
+                    this.layerGenes.push(new LayerGene('conv2d', { filters: 16, kernelSize: [3, 3], activation: 'relu' }));
+                    this.layerGenes.push(new LayerGene('batchNormalization', {}));
+                    this.layerGenes.push(new LayerGene('maxPooling2d', { poolSize: [2, 2], strides: [2, 2] }));
+                    this.layerGenes.push(new LayerGene('conv2d', { filters: 32, kernelSize: [3, 3], activation: 'relu' }, [0])); // Skip from first conv
                     this.layerGenes.push(new LayerGene('flatten', {}));
+                    this.layerGenes.push(new LayerGene('dense', { units: 64, activation: 'relu' }));
                     this.layerGenes.push(new LayerGene('dense', { units: 3, activation: 'softmax' }));
                 }
             }
             buildModel() {
-                if (this.model) this.model.dispose(); this.model = tf.sequential(); this.model.add(tf.layers.inputLayer({ inputShape: [IMG_HEIGHT, IMG_WIDTH, 1] }));
-                for (const layerGene of this.layerGenes) {
+                if (this.model) this.model.dispose();
+
+                const inputs = tf.layers.input({ shape: [IMG_HEIGHT, IMG_WIDTH, 1] });
+                let currentOutput = inputs;
+                const layerOutputs = [inputs]; // Store outputs of each layer
+
+                for (let i = 0; i < this.layerGenes.length; i++) {
+                    const layerGene = this.layerGenes[i];
+                    let layerInput = currentOutput;
+
+                    // Handle skip connections
+                    if (layerGene.skipInput && layerGene.skipInput.length > 0) {
+                        const skipTensors = layerGene.skipInput.map(skipIdx => layerOutputs[skipIdx]).filter(Boolean);
+                        if (skipTensors.length > 0) {
+                            // Attempt to concatenate. If shapes are incompatible, try adding (for ResNet-like blocks)
+                            try {
+                                layerInput = tf.layers.concatenate([layerInput, ...skipTensors]);
+                            } catch (e) {
+                                console.warn("Shape mismatch for skip connection concatenation, attempting addition:", e);
+                                // If concatenation fails, try adding if shapes are compatible
+                                if (skipTensors.length === 1 && layerInput.shape.every((dim, idx) => dim === skipTensors[0].shape[idx])) {
+                                    layerInput = tf.layers.add([layerInput, skipTensors[0]]);
+                                } else {
+                                    console.error("Could not resolve skip connection shape mismatch, skipping connection for this layer.", layerGene, e);
+                                    layerInput = currentOutput; // Fallback to no skip connection
+                                }
+                            }
+                        }
+                    }
+
                     try {
-                        if(layerGene.type === 'conv2d' || layerGene.type === 'maxPooling2d'){ const lastShape = this.model.layers[this.model.layers.length -1].outputShape; if (Array.isArray(lastShape) && lastShape.length === 4) { const inputH = lastShape[1] || 2; const inputW = lastShape[2] || 2; layerGene.params.kernelSize = Math.min(layerGene.params.kernelSize || 2, inputH, inputW); if (layerGene.params.kernelSize < 1) { layerGene.params.kernelSize = 1; } } }
-                        this.model.add(tf.layers[layerGene.type](layerGene.params));
+                        if (typeof tf.layers[layerGene.type] !== 'function') {
+                            throw new Error(`Unknown layer type: ${layerGene.type}`);
+                        }
+                        const layer = tf.layers[layerGene.type](layerGene.params);
+                        currentOutput = layer.apply(layerInput);
+                        layerOutputs.push(currentOutput);
                     } catch (e) {
-                        console.error("Error building model with layer:", layerGene, e); this.model.dispose(); this.model = tf.sequential(); this.model.add(tf.layers.inputLayer({inputShape: [IMG_HEIGHT, IMG_WIDTH, 1]})); this.model.add(tf.layers.flatten({})); this.model.add(tf.layers.dense({units: 3, activation: 'softmax'})); break;
+                        console.error("Error building model with layer:", layerGene.type, "with params:", layerGene.params, "Input shape:", layerInput.shape, "Full layerGene:", layerGene, "Error:", e);
+                        // Fallback to a simple model if a layer fails to build
+                        this.model = tf.sequential();
+                        this.model.add(tf.layers.inputLayer({ inputShape: [IMG_HEIGHT, IMG_WIDTH, 1] }));
+                        this.model.add(tf.layers.flatten({}));
+                        this.model.add(tf.layers.dense({ units: 3, activation: 'softmax' }));
+                        return; 
                     }
                 }
+                this.model = tf.model({ inputs: inputs, outputs: currentOutput });
             }
             predict(inputs) { if (!this.model) this.buildModel(); const actions = ['left', 'right', 'shoot']; return tf.tidy(() => { const output = this.model.predict(inputs); const actionIndex = output.argMax(-1).dataSync()[0]; return actions[actionIndex]; }); }
             dispose() { if (this.model) this.model.dispose(); }
@@ -200,14 +347,81 @@
             constructor(size) { this.genomes = []; for (let i = 0; i < size; i++) { this.genomes.push(new Genome()); } this.species = []; this.allTimeBestGenome = null; this.nextSpeciesId = 0; }
             async evolve() {
                 await this.speciate();
+                
+                // Update stagnation for existing species
+                for (const s of this.species) {
+                    if (s.members.length > 0) {
+                        const bestFitnessInSpecies = Math.max(...s.members.map(m => m.fitness));
+                        if (bestFitnessInSpecies > s.bestFitnessEver || s.bestFitnessEver === undefined) {
+                            s.bestFitnessEver = bestFitnessInSpecies;
+                            s.stagnationCount = 0;
+                        } else {
+                            s.stagnationCount++;
+                        }
+                    }
+                }
+
+                // Remove stagnated species (e.g., 15 generations without improvement)
+                this.species = this.species.filter(s => s.stagnationCount < 15 || s.members.length === 0);
+
+                // Sort species by best fitness of their members
+                this.species.sort((a, b) => b.members[0].fitness - a.members[0].fitness);
+
+                // Limit the number of species to POPULATION_SIZE
+                if (this.species.length > POPULATION_SIZE) {
+                    this.species = this.species.slice(0, POPULATION_SIZE);
+                }
+
+                const genomeGameMap = new Map();
+                for(let i=0; i < POPULATION_SIZE; i++) { genomeGameMap.set(this.genomes[i], gameInstances[i]); }
+
+                const sortedGenomesForTraining = [...this.genomes].sort((a, b) => b.fitness - a.fitness);
+                const champions = sortedGenomesForTraining.slice(0, 2); // Train top 2 of population
+                for(const champion of champions) {
+                    const gameHistory = genomeGameMap.get(champion)?.history;
+                    if(gameHistory && gameHistory.length > 0) { await this.trainOnHistory(champion.model, gameHistory); }
+                }
+
                 const sortedGenomes = [...this.genomes].sort((a, b) => b.fitness - a.fitness);
-                if (!this.allTimeBestGenome || sortedGenomes[0].fitness > this.allTimeBestGenome.fitness) { this.allTimeBestGenome = new Genome(sortedGenomes[0]); this.allTimeBestGenome.fitness = sortedGenomes[0].fitness; drawNetworkArchitecture(this.allTimeBestGenome); }
+                if (!this.allTimeBestGenome || sortedGenomes[0].fitness > this.allTimeBestGenome.fitness) { this.allTimeBestGenome = new Genome(sortedGenomes[0]); this.allTimeBestGenome.fitness = sortedGenomes[0].fitness; drawNetworkArchitecture('all-time-best-architecture', this.allTimeBestGenome, 'All-Time Best Architecture'); }
+
+                // Draw top species architectures
+                const speciesGrid = document.getElementById('species-networks-grid');
+                speciesGrid.innerHTML = ''; // Clear previous species networks
+                const sortedSpecies = [...this.species].sort((a, b) => b.members[0].fitness - a.members[0].fitness); // Sort species by best member fitness
+                const numSpeciesToDisplay = Math.min(sortedSpecies.length, 3); // Display top 3 species
+
+                for (let i = 0; i < numSpeciesToDisplay; i++) {
+                    const species = sortedSpecies[i];
+                    const speciesDiv = document.createElement('div');
+                    speciesDiv.id = `species-architecture-${species.id}`;
+                    speciesDiv.className = 'species-architecture-item';
+                    speciesGrid.appendChild(speciesDiv);
+                    drawNetworkArchitecture(`species-architecture-${species.id}`, species.representative, `Species ${species.id} (Best: ${species.members[0].fitness.toFixed(0)})`, false);
+                }
                 document.getElementById('best-fitness').textContent = this.allTimeBestGenome.fitness.toFixed(0);
                 const newGeneration = [];
                 if (this.allTimeBestGenome) { const elite = new Genome(this.allTimeBestGenome); elite.buildModel(); newGeneration.push(elite); }
+                
+                // Ensure at least one member from each species is carried over
+                for (const s of this.species) {
+                    if (s.members.length > 0) {
+                        // Sort members by fitness and take the best one
+                        s.members.sort((a, b) => b.fitness - a.fitness);
+                        const eliteMember = new Genome(s.members[0]);
+                        eliteMember.buildModel();
+                        newGeneration.push(eliteMember);
+                    }
+                }
+
                 while (newGeneration.length < POPULATION_SIZE) {
                     const species = this.selectSpecies();
-                    if (!species || species.members.length === 0) { const randomGenome = this.genomes[Math.floor(Math.random() * this.genomes.length)]; newGeneration.push(new Genome(randomGenome)); continue; };
+                    if (!species || species.members.length === 0) { 
+                        // If no valid species, pick a random genome from the current population
+                        const randomGenome = this.genomes[Math.floor(Math.random() * this.genomes.length)];
+                        newGeneration.push(new Genome(randomGenome));
+                        continue; 
+                    };
                     const parent1 = this.selectParent(species);
                     const parent2 = this.selectParent(species);
                     const child = this.crossover(parent1, parent2);
@@ -217,158 +431,387 @@
                 this.genomes.forEach(g => g.dispose());
                 this.genomes = newGeneration;
                 generation++;
-                document.getElementById('generation-count').textContent = generation;
+                document.getElementById('generation-count').textContent = generation + 1;
                 document.getElementById('species-count').textContent = this.species.length;
             }
-            async speciate() { for (const s of this.species) { s.members = []; } for (const genome of this.genomes) { let foundSpecies = false; for (const s of this.species) { const distance = this.calculateDistance(genome, s.representative); if (distance < COMPATIBILITY_THRESHOLD) { s.members.push(genome); foundSpecies = true; break; } } if (!foundSpecies) { this.species.push({ id: this.nextSpeciesId++, representative: new Genome(genome), members: [genome] }); } } this.species = this.species.filter(s => s.members.length > 0); for (const s of this.species) { s.representative = new Genome(s.members[Math.floor(Math.random() * s.members.length)]); } }
-            calculateDistance(g1, g2) { let d=0; d+=Math.abs(g1.layerGenes.length-g2.layerGenes.length)*0.5; const len=Math.min(g1.layerGenes.length, g2.layerGenes.length); for(let i=0;i<len;i++){ const l1=g1.layerGenes[i]; const l2=g2.layerGenes[i]; if(l1.type!==l2.type){d+=1}else{if(l1.type==='conv2d'||l1.type==='maxPooling2d'){d+=Math.abs((l1.params.filters||0)-(l2.params.filters||0))/16;d+=Math.abs((l1.params.kernelSize||l1.params.poolSize||0)-(l2.params.kernelSize||l2.params.poolSize||0))/4}else if(l1.type==='dense'){d+=Math.abs(l1.params.units-l2.params.units)/64}}} return d; }
-            crossover(p1, p2) { const child = new Genome(); child.layerGenes = []; const len = Math.min(p1.layerGenes.length, p2.layerGenes.length); for (let i = 0; i < len; i++) { child.layerGenes.push(Math.random() < 0.5 ? p1.layerGenes[i].clone() : p2.layerGenes[i].clone()); } if (p1.layerGenes.length > len) { for (let i = len; i < p1.layerGenes.length; i++) { child.layerGenes.push(p1.layerGenes[i].clone()); } } return child; }
+
+            async trainOnHistory(model, history) {
+                if(!model) return;
+                console.log("Fine-tuning with backprop...");
+                const actions = ['left', 'right', 'shoot'];
+                const statesData = history.map(h => h.state);
+                const labels = history.map(h => { const actionIndex = actions.indexOf(h.action); const label = new Array(3).fill(0); label[actionIndex] = 1; return label; });
+                
+                const flatStates = new Float32Array(statesData.length * IMG_HEIGHT * IMG_WIDTH);
+                statesData.forEach((state, i) => { flatStates.set(state, i * IMG_HEIGHT * IMG_WIDTH); });
+
+                const xs = tf.tensor4d(flatStates, [statesData.length, IMG_HEIGHT, IMG_WIDTH, 1]);
+                const ys = tf.tensor2d(labels);
+
+                model.compile({ optimizer: tf.train.adam(learningRate), loss: 'categoricalCrossentropy' });
+                await model.fit(xs, ys, { epochs: trainingEpochs, shuffle: true, verbose: 0 });
+                xs.dispose(); ys.dispose();
+            }
+
+            async speciate() { for (const s of this.species) { s.members = []; } for (const genome of this.genomes) { let foundSpecies = false; for (const s of this.species) { const distance = this.calculateDistance(genome, s.representative); if (distance < COMPATIBILITY_THRESHOLD) { s.members.push(genome); genome.speciesId = s.id; foundSpecies = true; break; } } if (!foundSpecies) { this.species.push({ id: this.nextSpeciesId++, representative: new Genome(genome), members: [genome], stagnationCount: 0 }); genome.speciesId = this.species[this.species.length - 1].id; } } this.species = this.species.filter(s => s.members.length > 0); for (const s of this.species) { s.representative = new Genome(s.members[Math.floor(Math.random() * s.members.length)]); } }
+            calculateDistance(g1, g2) { 
+                let d=0;
+                d+=Math.abs(g1.layerGenes.length-g2.layerGenes.length)*0.5; 
+                const len=Math.min(g1.layerGenes.length, g2.layerGenes.length); 
+                for(let i=0;i<len;i++){
+                    const l1=g1.layerGenes[i]; 
+                    const l2=g2.layerGenes[i]; 
+                    if(l1.type!==l2.type){
+                        d+=1
+                    }else{
+                        if(l1.type==='conv2d'||l1.type==='maxPooling2d'){
+                            d+=Math.abs((l1.params.filters||0)-(l2.params.filters||0))/16; 
+                            const k1 = l1.params.kernelSize || l1.params.poolSize || [0,0]; 
+                            const k2 = l2.params.kernelSize || l2.params.poolSize || [0,0]; 
+                            d+=(Math.abs(k1[0]-k2[0])+Math.abs(k1[1]-k2[1]))/8;
+                        }else if(l1.type==='dense'){
+                            d+=Math.abs(l1.params.units-l2.params.units)/64
+                        }
+                    }
+                    // Compare skip connections
+                    const skip1 = l1.skipInput || [];
+                    const skip2 = l2.skipInput || [];
+                    const commonSkips = skip1.filter(value => skip2.includes(value)).length;
+                    const allSkips = new Set([...skip1, ...skip2]).size;
+                    if (allSkips > 0) {
+                        d += (allSkips - commonSkips) / allSkips; // Normalized difference
+                    }
+                }
+                return d; 
+            }
+            crossover(p1, p2) {
+                const child = new Genome();
+                child.layerGenes = [];
+                // Assign speciesId from one of the parents (e.g., p1)
+                child.speciesId = p1.speciesId;
+
+                const len = Math.min(p1.layerGenes.length, p2.layerGenes.length);
+                for (let i = 0; i < len; i++) {
+                    child.layerGenes.push(Math.random() < 0.5 ? p1.layerGenes[i].clone() : p2.layerGenes[i].clone());
+                }
+                // If parents have different lengths, add remaining genes from the longer parent
+                if (p1.layerGenes.length > len) {
+                    for (let i = len; i < p1.layerGenes.length; i++) {
+                        child.layerGenes.push(p1.layerGenes[i].clone());
+                    }
+                } else if (p2.layerGenes.length > len) {
+                    for (let i = len; i < p2.layerGenes.length; i++) {
+                        child.layerGenes.push(p2.layerGenes[i].clone());
+                    }
+                }
+                return child;
+            }
             
             mutate(genome) {
-                if (genome.model && Math.random() < MUTATE_WEIGHT_CHANCE) { tf.tidy(() => { const newWeights = []; for (const weight of genome.model.getWeights()) { const shape = weight.shape; const oldValues = weight.dataSync(); const newValues = new Float32Array(oldValues.length); for (let i = 0; i < oldValues.length; i++) { if (Math.random() < 0.1) { newValues[i] = oldValues[i] + (Math.random() * 0.4 - 0.2); } else { newValues[i] = oldValues[i]; } } newWeights.push(tf.tensor(newValues, shape)); } genome.model.setWeights(newWeights); newWeights.forEach(w => w.dispose()); }); }
+                if (genome.model && Math.random() < MUTATE_WEIGHT_CHANCE) {
+                    tf.tidy(() => {
+                        const newWeights = [];
+                        for (const weight of genome.model.getWeights()) {
+                            const shape = weight.shape;
+                            const oldValues = weight.dataSync();
+                            const newValues = new Float32Array(oldValues.length);
+                            for (let i = 0; i < oldValues.length; i++) {
+                                if (Math.random() < 0.1) {
+                                    newValues[i] = oldValues[i] + (Math.random() * 0.4 - 0.2);
+                                } else {
+                                    newValues[i] = oldValues[i];
+                                }
+                            }
+                            newWeights.push(tf.tensor(newValues, shape));
+                        }
+                        genome.model.setWeights(newWeights);
+                        newWeights.forEach(w => w.dispose());
+                    });
+                }
                 if (Math.random() < MUTATE_LAYER_PARAM_CHANCE) {
                     const layerIndex = Math.floor(Math.random() * genome.layerGenes.length);
                     const layerGene = genome.layerGenes[layerIndex];
-                    if (layerGene.type === 'conv2d') { if (Math.random() < 0.5) { layerGene.params.filters = Math.max(1, layerGene.params.filters + (Math.random() < 0.5 ? -1 : 1)); } else { const newSize = layerGene.params.kernelSize + (Math.random() < 0.5 ? -1 : 1); layerGene.params.kernelSize = Math.max(1, Math.min(newSize, 5)); } }
+                    if (layerGene.type === 'conv2d') {
+                        if (Math.random() < 0.1) {
+                            layerGene.params.filters = Math.max(1, layerGene.params.filters * 2);
+                        } else if (Math.random() < 0.5) {
+                            layerGene.params.filters = Math.max(1, layerGene.params.filters + (Math.random() < 0.5 ? -1 : 1));
+                        } else {
+                            // Mutate kernelSize as a square kernel within a safe range
+                            let currentKernelSize = (Array.isArray(layerGene.params.kernelSize) && layerGene.params.kernelSize.length === 2) ? layerGene.params.kernelSize[0] : 3;
+                            let newKernelSize = currentKernelSize + (Math.random() < 0.5 ? -1 : 1);
+                            newKernelSize = Math.max(1, Math.min(newKernelSize, 3)); // Keep between 1 and 3
+                            layerGene.params.kernelSize = [newKernelSize, newKernelSize];
+                        }
+                    }
+                    else if (layerGene.type === 'maxPooling2d') {
+                        if (Math.random() < 0.5) { // Mutate poolSize
+                            let newPoolX = layerGene.params.poolSize[0] + (Math.random() < 0.5 ? -1 : 1);
+                            let newPoolY = layerGene.params.poolSize[1] + (Math.random() < 0.5 ? -1 : 1);
+                            layerGene.params.poolSize = [
+                                Math.max(2, Math.min(newPoolX, 4)), // Ensure min 2, max 4
+                                Math.max(2, Math.min(newPoolY, 4))
+                            ];
+                        } else { // Mutate strides
+                            let newStridesX = layerGene.params.strides[0] + (Math.random() < 0.5 ? -1 : 1);
+                            let newStridesY = layerGene.params.strides[1] + (Math.random() < 0.5 ? -1 : 1);
+                            layerGene.params.strides = [
+                                Math.max(1, Math.min(newStridesX, 3)), // Ensure min 1, max 3
+                                Math.max(1, Math.min(newStridesY, 3))
+                            ];
+                        }
+                    }
                     else if (layerGene.type === 'dense' && layerGene.params.units && layerGene.params.activation !== 'softmax') { layerGene.params.units = Math.max(2, layerGene.params.units + (Math.random() < 0.5 ? -2 : 2)); }
-                    else if (layerGene.type === 'maxPooling2d') { const newSize = layerGene.params.poolSize[0] + (Math.random() < 0.5 ? -1 : 1); layerGene.params.poolSize = [Math.max(1,newSize), Math.max(1,newSize)]; }
-                    if (layerGene.params.activation && layerGene.params.activation !== 'softmax') { if (Math.random() < 0.2) { layerGene.params.activation = ['relu', 'tanh', 'sigmoid'][Math.floor(Math.random() * 3)]; } }
                 }
                 
-                if (Math.random() < ADD_LAYER_CHANCE) {
+                const topologyChance = ADD_LAYER_CHANCE + REMOVE_LAYER_CHANCE;
+                if (Math.random() < topologyChance) {
                     const flattenIndex = genome.layerGenes.findIndex(lg => lg.type === 'flatten');
-                    if (flattenIndex === -1) return;
-                    const addConv = Math.random() < 0.5;
-                    if (addConv) {
-                        const insertIndex = Math.floor(Math.random() * (flattenIndex + 1));
-                        const choice = Math.random();
-                        let newLayer;
-                        if (choice < 0.6) newLayer = new LayerGene('conv2d', { filters: 4, kernelSize: 3, activation: 'relu' });
-                        else if (choice < 0.8) newLayer = new LayerGene('maxPooling2d', { poolSize: [2, 2], strides: [2, 2] });
-                        else newLayer = new LayerGene('batchNormalization', {});
-                        genome.layerGenes.splice(insertIndex, 0, newLayer);
-                    } else {
-                        const finalLayerIndex = genome.layerGenes.length - 1;
-                        const insertStartIndex = flattenIndex + 1;
-                        if (insertStartIndex < finalLayerIndex) { const insertIndex = insertStartIndex + Math.floor(Math.random() * (finalLayerIndex - insertStartIndex)); const newLayer = new LayerGene('dense', { units: 16, activation: 'relu' }); genome.layerGenes.splice(insertIndex, 0, newLayer); }
+                    const finalLayerIndex = genome.layerGenes.length - 1;
+
+                    // Ensure flatten and a final dense layer exist, which is critical.
+                    if (flattenIndex === -1 || flattenIndex >= finalLayerIndex) {
+                        return; // Cannot mutate topology if the basic structure is missing.
+                    }
+
+                    if (Math.random() < ADD_LAYER_CHANCE / topologyChance) { // Add a layer
+                        // Decide whether to add to the convolutional part or the dense part
+                        if (Math.random() < 0.5) {
+                            // Add a CONVOLUTIONAL layer (conv2d, maxPooling2d, batchNormalization)
+                            const layerTypes = ['conv2d', 'maxPooling2d', 'batchNormalization'];
+                            const randomType = layerTypes[Math.floor(Math.random() * layerTypes.length)];
+                            let newLayer;
+                            if (randomType === 'conv2d') {
+                                newLayer = new LayerGene('conv2d', { filters: 8, kernelSize: [3, 3], activation: 'relu' });
+                            } else if (randomType === 'maxPooling2d') {
+                                newLayer = new LayerGene('maxPooling2d', { poolSize: [2, 2], strides: [2, 2] });
+                            } else {
+                                newLayer = new LayerGene('batchNormalization', {});
+                            }
+                            // Insert before the flatten layer
+                            const insertIndex = Math.floor(Math.random() * (flattenIndex + 1));
+                            genome.layerGenes.splice(insertIndex, 0, newLayer);
+
+                        } else {
+                            // Add a DENSE layer
+                            const newLayer = new LayerGene('dense', { units: 32, activation: 'relu' });
+                            // Insert between flatten and the final output layer
+                            const insertStartIndex = flattenIndex + 1;
+                            const insertIndex = insertStartIndex + Math.floor(Math.random() * (finalLayerIndex - insertStartIndex));
+                            genome.layerGenes.splice(insertIndex, 0, newLayer);
+                        }
+
+                    } else { // Remove a layer
+                        // Do not remove the essential first, flatten, or final layers
+                        if (genome.layerGenes.length > 4) {
+                            // Pick a layer to remove, avoiding essential ones
+                            const removableIndices = [];
+                            for (let i = 1; i < finalLayerIndex; i++) {
+                                if (i !== flattenIndex) {
+                                    removableIndices.push(i);
+                                }
+                            }
+
+                            if (removableIndices.length > 0) {
+                                const removeIndex = removableIndices[Math.floor(Math.random() * removableIndices.length)];
+                                genome.layerGenes.splice(removeIndex, 1);
+                            }
+                        }
                     }
                 }
 
-                if (genome.layerGenes.length > 3 && Math.random() < REMOVE_LAYER_CHANCE) { const removeIndex = Math.floor(Math.random() * (genome.layerGenes.length - 2)) + 1; if (genome.layerGenes[removeIndex].type !== 'flatten') { genome.layerGenes.splice(removeIndex, 1); } }
+                // Mutate skip connections
+                if (Math.random() < 0.1) { // Chance to add/remove skip connection
+                    const targetLayerIndex = Math.floor(Math.random() * (genome.layerGenes.length - 1)) + 1; // Cannot skip to input layer
+                    const sourceLayerIndex = Math.floor(Math.random() * targetLayerIndex); // Source must be before target
+
+                    const targetLayer = genome.layerGenes[targetLayerIndex];
+
+                    if (Math.random() < 0.5) { // Add skip connection
+                        if (!targetLayer.skipInput.includes(sourceLayerIndex)) {
+                            targetLayer.skipInput.push(sourceLayerIndex);
+                            targetLayer.skipInput.sort((a, b) => a - b); // Keep sorted
+                        }
+                    } else { // Remove skip connection
+                        const indexToRemove = targetLayer.skipInput.indexOf(sourceLayerIndex);
+                        if (indexToRemove !== -1) {
+                            targetLayer.skipInput.splice(indexToRemove, 1);
+                        }
+                    }
+                }
             }
 
             selectSpecies() { const totalFitness = this.species.reduce((s, sp) => s + sp.members.reduce((ss, m) => ss + Math.max(0, m.fitness), 0), 0); if (totalFitness <= 0) return this.species[0]; let r = Math.random() * totalFitness; for (const s of this.species) { for (const m of s.members) { r -= Math.max(0, m.fitness); if (r <= 0) return s } } return this.species[0]; }
             selectParent(species) { const totalFitness = species.members.reduce((s, m) => s + Math.max(0, m.fitness), 0); if (totalFitness <= 0) return species.members[0]; let r = Math.random() * totalFitness; for (const m of species.members) { r -= Math.max(0, m.fitness); if (r <= 0) return m } return species.members[0]; }
         }
 
-        // --- Main Control Loop ---
-        function runGeneration() {
-            let updatesThisFrame = 0;
-            const updatesPerFrame = gameSpeed > 10 ? Math.floor(gameSpeed / 10) : 1;
-            function singleFrame() {
-                if (isPaused) { animationFrameId = requestAnimationFrame(singleFrame); return; }
-                for (let i = 0; i < updatesPerFrame; i++) {
-                    generationFrames++;
-                    let allGamesOver = true;
-                    for (let j = 0; j < POPULATION_SIZE; j++) { const game = gameInstances[j]; const genome = population.genomes[j]; if (game.gameOver) continue; allGamesOver = false; const inputs = getGameInputs(game); const action = genome.predict(inputs); inputs.dispose(); game.update(action); }
-                    if ((generationFrames / FPS) > generationTimeLimit) { gameInstances.forEach(game => { if (!game.gameOver) game.endGame(); }); }
-                    if (allGamesOver) { endGeneration(); return; }
+        // --- Main Control Loop (Performance Refactor) ---
+        async function mainLoop() {
+            if (isPaused) { animationFrameId = requestAnimationFrame(mainLoop); return; }
+            
+            for (let s = 0; s < gameSpeed; s++) {
+                generationFrames++;
+                let allGamesOver = true;
+                for (let j = 0; j < POPULATION_SIZE; j++) {
+                    const game = gameInstances[j];
+                    const genome = population.genomes[j];
+                    if (game.gameOver) continue;
+                    allGamesOver = false;
+                    const inputsTensor = getGameInputs(game, false);
+                    const inputsData = inputsTensor.dataSync(); // Get data for history
+                    const action = genome.predict(inputsTensor);
+                    game.update(action, inputsData); // Pass data to be stored
+                    inputsTensor.dispose();
                 }
-                for (let i = 0; i < POPULATION_SIZE; i++) { gameInstances[i].draw(); const overlay = document.getElementById(`overlay-${i}`); overlay.textContent = `Fitness: ${gameInstances[i].fitness.toFixed(0)} | Lives: ${gameInstances[i].player.lives}`; }
-                if (gameSpeed > 10 && updatesThisFrame * updatesPerFrame < gameSpeed) { updatesThisFrame++; setTimeout(singleFrame, 0); }
-                else { animationFrameId = requestAnimationFrame(singleFrame); }
+
+                if ((generationFrames / FPS) > generationTimeLimit) {
+                    gameInstances.forEach(game => { if (!game.gameOver) game.endGame(); });
+                    allGamesOver = true; // Force generation end
+                }
+
+                if (allGamesOver) {
+                    await endGeneration();
+                    return;
+                }
             }
-            singleFrame();
+            
+            const renderGames = gameSpeed <= 10; // Render only if gameSpeed is 10 or less
+            document.getElementById('render-status').textContent = renderGames ? 'RENDERING' : 'SIMULATING (Rendering Off)';
+
+            if (renderGames) {
+                for (let i = 0; i < POPULATION_SIZE; i++) {
+                    gameInstances[i].draw();
+                    const overlay = document.getElementById(`overlay-${i}`);
+                    overlay.textContent = `Fitness: ${gameInstances[i].fitness.toFixed(0)} | Lives: ${gameInstances[i].player.lives} | Species: ${gameInstances[i].genome.speciesId === -1 ? 'N/A' : gameInstances[i].genome.speciesId + 1}`;
+                }
+            } else {
+                // Update overlays only for the best genome if not rendering all
+                const bestGenomeIndex = population.genomes.findIndex(g => g === population.allTimeBestGenome);
+                if (bestGenomeIndex !== -1) {
+                    const overlay = document.getElementById(`overlay-${bestGenomeIndex}`);
+                    if (overlay) {
+                        overlay.textContent = `Fitness: ${gameInstances[bestGenomeIndex].fitness.toFixed(0)} | Lives: ${gameInstances[bestGenomeIndex].player.lives} | Species: ${gameInstances[bestGenomeIndex].genome.speciesId === -1 ? 'N/A' : gameInstances[bestGenomeIndex].genome.speciesId + 1}`;
+                    }
+                }
+            }
+            const elapsed = generationFrames / FPS;
+            const remaining = Math.max(0, generationTimeLimit - elapsed);
+            document.getElementById('time-limit').textContent = remaining.toFixed(1);
+
+            animationFrameId = requestAnimationFrame(mainLoop);
         }
         
         async function endGeneration() {
-            cancelAnimationFrame(animationFrameId);
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
             for (let i = 0; i < POPULATION_SIZE; i++) { if(!gameInstances[i].gameOver) gameInstances[i].endGame(); population.genomes[i].fitness = gameInstances[i].fitness; }
             await population.evolve();
             generationFrames = 0;
-            generationTimeLimit += 5;
-            document.getElementById('time-limit').textContent = generationTimeLimit;
-            for (let i = 0; i < POPULATION_SIZE; i++) { gameInstances[i].init(); }
-            runGeneration();
+            generationTimeLimit = Math.min(60, generationTimeLimit + 5);
+            for (let i = 0; i < POPULATION_SIZE; i++) { gameInstances[i].init(); gameInstances[i].genome = population.genomes[i]; }
+            mainLoop();
         }
 
-        function getGameInputs(game) { return tf.tidy(() => { const pixelData = game.ctx.getImageData(0, 0, 200, 150); let tensor = tf.browser.fromPixels(pixelData, 1); tensor = tf.image.resizeBilinear(tensor, [IMG_HEIGHT, IMG_WIDTH]); tensor = tensor.div(255.0); return tensor.expandDims(0); }); }
+        function getGameInputs(game, rawData = false) {
+            return tf.tidy(() => {
+                const pixelData = game.ctx.getImageData(0, 0, 200, 150);
+                let tensor = tf.browser.fromPixels(pixelData, 1);
+                tensor = tf.image.resizeBilinear(tensor, [IMG_HEIGHT, IMG_WIDTH]);
+                tensor = tensor.div(255.0);
+                if (rawData) {
+                    const data = tensor.dataSync();
+                    tensor.dispose();
+                    return data;
+                }
+                return tensor.expandDims(0);
+            });
+        }
         
         // --- UI & Visualization ---
-        function drawNetworkArchitecture(genome) {
-            const svg = document.getElementById('network-svg');
-            const stats = document.getElementById('network-stats');
-            svg.innerHTML = '';
+        function drawNetworkArchitecture(containerId, genome, title = "Architecture", drawSvg = true) {
+            const container = document.getElementById(containerId);
+            if (!container) return;
+
+            let svgHtml = '';
+            if (drawSvg) {
+                svgHtml = `<svg width="400" height="${genome.layerGenes.length * 60}" class="network-svg"></svg>`;
+            }
+            container.innerHTML = `<h3>${title}</h3>${svgHtml}<div class="network-stats"></div>`;
             
-            const width = svg.clientWidth;
-            const layerHeight = 45;
-            const layerGap = 15;
-            const totalHeight = genome.layerGenes.length * (layerHeight + layerGap);
-            svg.setAttribute('height', totalHeight > 0 ? totalHeight : 50);
+            const statsDiv = container.querySelector('.network-stats');
 
-            let yOffset = layerHeight / 2;
+            if (drawSvg) {
+                const svg = container.querySelector('.network-svg');
+                const width = svg.clientWidth;
+                const layerHeight = 45;
+                const layerGap = 15;
+                const totalHeight = genome.layerGenes.length * (layerHeight + layerGap);
+                svg.setAttribute('height', totalHeight > 0 ? totalHeight : 50);
 
-            genome.layerGenes.forEach((lg, i) => {
-                const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-                
-                const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-                rect.setAttribute('x', 10);
-                rect.setAttribute('y', yOffset - layerHeight/2);
-                rect.setAttribute('width', width - 20);
-                rect.setAttribute('height', layerHeight);
-                rect.setAttribute('rx', 5);
-                rect.setAttribute('ry', 5);
-                
-                const text1 = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                text1.setAttribute('x', width / 2);
-                text1.setAttribute('y', yOffset - 5);
-                text1.setAttribute('text-anchor', 'middle');
-                text1.setAttribute('fill', 'white');
-                text1.setAttribute('font-size', '14px');
-                text1.textContent = lg.type.toUpperCase();
-                
-                const text2 = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                text2.setAttribute('x', width / 2);
-                text2.setAttribute('y', yOffset + 15);
-                text2.setAttribute('text-anchor', 'middle');
-                text2.setAttribute('fill', 'lightgray');
-                text2.setAttribute('font-size', '12px');
-                
-                if (lg.type === 'conv2d') { rect.setAttribute('fill', '#2980B9'); text2.textContent = `filters: ${lg.params.filters}, kernel: ${lg.params.kernelSize}, act: ${lg.params.activation}`; }
-                else if (lg.type === 'maxPooling2d') { rect.setAttribute('fill', '#C0392B'); text2.textContent = `pool: [${lg.params.poolSize}]`; }
-                else if (lg.type === 'batchNormalization') { rect.setAttribute('fill', '#F1C40F'); text1.setAttribute('y', yOffset + 5); }
-                else if (lg.type === 'flatten') { rect.setAttribute('fill', '#27AE60'); text1.setAttribute('y', yOffset + 5); }
-                else if (lg.type === 'dense') { rect.setAttribute('fill', '#8E44AD'); text2.textContent = `units: ${lg.params.units}, act: ${lg.params.activation}`; }
-                
-                g.appendChild(rect);
-                g.appendChild(text1);
-                if (text2.textContent) g.appendChild(text2);
-                svg.appendChild(g);
+                let yOffset = layerHeight / 2;
 
-                if (i > 0) {
-                    const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-                    const startY = yOffset - layerHeight/2 - layerGap;
-                    const endY = yOffset - layerHeight/2;
-                    arrow.setAttribute('d', `M ${width/2} ${startY + 5} v ${layerGap - 10}`);
-                    arrow.setAttribute('stroke', '#fff');
-                    arrow.setAttribute('stroke-width', '2');
-                    arrow.setAttribute('marker-end', 'url(#arrowhead)');
-                    svg.appendChild(arrow);
-                }
+                genome.layerGenes.forEach((lg, i) => {
+                    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                    
+                    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+                    rect.setAttribute('x', 10); rect.setAttribute('y', yOffset - layerHeight/2); rect.setAttribute('width', width - 20); rect.setAttribute('height', layerHeight); rect.setAttribute('rx', 5); rect.setAttribute('ry', 5);
+                    
+                    const text1 = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    text1.setAttribute('x', width / 2); text1.setAttribute('y', yOffset - 5); text1.setAttribute('text-anchor', 'middle'); text1.setAttribute('fill', 'white'); text1.setAttribute('font-size', '14px');
+                    text1.textContent = lg.type.toUpperCase();
+                    
+                    const text2 = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    text2.setAttribute('x', width / 2); text2.setAttribute('y', yOffset + 15); text2.setAttribute('text-anchor', 'middle'); text2.setAttribute('fill', 'lightgray'); text2.setAttribute('font-size', '12px');
+                    
+                    if (lg.type === 'conv2d') { rect.setAttribute('fill', '#2980B9'); text2.textContent = `filters: ${lg.params.filters}, kernel: [${lg.params.kernelSize}], act: ${lg.params.activation}`; }
+                    else if (lg.type === 'maxPooling2d') { rect.setAttribute('fill', '#C0392B'); text2.textContent = `pool: [${lg.params.poolSize}], strides: [${lg.params.strides}]`; }
+                    else if (lg.type === 'batchNormalization') { rect.setAttribute('fill', '#F1C40F'); text1.setAttribute('y', yOffset + 5); }
+                    else if (lg.type === 'flatten') { rect.setAttribute('fill', '#27AE60'); text1.setAttribute('y', yOffset + 5); }
+                    else if (lg.type === 'dense') { rect.setAttribute('fill', '#8E44AD'); text2.textContent = `units: ${lg.params.units}, act: ${lg.params.activation}`; }
+                    
+                    g.appendChild(rect); g.appendChild(text1); if (text2.textContent) g.appendChild(text2);
+                    svg.appendChild(g);
 
-                yOffset += layerHeight + layerGap;
-            });
+                    // Draw skip connections
+                    if (lg.skipInput && lg.skipInput.length > 0) {
+                        lg.skipInput.forEach(skipIdx => {
+                            const skipArrow = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                            const startY = (skipIdx * (layerHeight + layerGap)) + (layerHeight / 2);
+                            const endY = yOffset;
+                            const startX = 10; // Left edge of the layer box
+                            const endX = width - 10; // Right edge of the layer box
 
-            const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
-            const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
-            marker.setAttribute('id', 'arrowhead'); marker.setAttribute('viewBox', '0 -5 10 10'); marker.setAttribute('refX', 5); marker.setAttribute('refY', 0); marker.setAttribute('markerWidth', 4); marker.setAttribute('markerHeight', 4); marker.setAttribute('orient', 'auto');
-            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-            path.setAttribute('d', 'M0,-5L10,0L0,5'); path.setAttribute('fill', '#fff');
-            marker.appendChild(path); defs.appendChild(marker); svg.appendChild(defs);
+                            // Draw a curved line for skip connection
+                            skipArrow.setAttribute('d', `M ${startX} ${startY} C ${startX - 20} ${startY}, ${startX - 20} ${endY}, ${startX} ${endY}`);
+                            skipArrow.setAttribute('stroke', '#FFD700'); // Gold color for skip connections
+                            skipArrow.setAttribute('stroke-width', '2');
+                            skipArrow.setAttribute('fill', 'none');
+                            skipArrow.setAttribute('marker-end', 'url(#arrowhead)');
+                            svg.appendChild(skipArrow);
+                        });
+                    }
+
+                    if (i > 0) {
+                        const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                        const startY = yOffset - layerHeight/2 - layerGap;
+                        const endY = yOffset - layerHeight/2;
+                        arrow.setAttribute('d', `M ${width/2} ${startY + 5} v ${layerGap - 10}`);
+                        arrow.setAttribute('stroke', '#fff'); arrow.setAttribute('stroke-width', '2'); arrow.setAttribute('marker-end', 'url(#arrowhead)');
+                        svg.appendChild(arrow);
+                    }
+                    yOffset += layerHeight + layerGap;
+                });
+
+                const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+                const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+                marker.setAttribute('id', 'arrowhead'); marker.setAttribute('viewBox', '0 -5 10 10'); marker.setAttribute('refX', 5); marker.setAttribute('refY', 0); marker.setAttribute('markerWidth', 4); marker.setAttribute('markerHeight', 4); marker.setAttribute('orient', 'auto');
+                const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                path.setAttribute('d', 'M0,-5L10,0L0,5'); path.setAttribute('fill', '#fff');
+                marker.appendChild(path); defs.appendChild(marker); svg.appendChild(defs);
+            }
 
             let html = `<p>Best Fitness: ${genome.fitness.toFixed(0)}</p><p>--- Architecture ---</p>`;
-            genome.layerGenes.forEach((lg, i) => { html += `<p>Layer ${i}: ${lg.type}`; if (lg.type === 'conv2d') { html += ` | f: ${lg.params.filters}, k: ${lg.params.kernelSize}, a: ${lg.params.activation}`; } else if (lg.type === 'dense' && lg.params.units) { html += ` | u: ${lg.params.units}, a: ${lg.params.activation}`; } html += `</p>`; });
-            stats.innerHTML = html;
+            genome.layerGenes.forEach((lg, i) => { html += `<p>Layer ${i}: ${lg.type}`; if (lg.type === 'conv2d') { html += ` | f: ${lg.params.filters}, k: [${lg.params.kernelSize}], a: ${lg.params.activation}`; } else if (lg.type === 'dense' && lg.params.units) { html += ` | u: ${lg.params.units}, a: ${lg.params.activation}`; } else if (lg.type === 'maxPooling2d') { html += ` | pool: [${lg.params.poolSize}], strides: [${lg.params.strides}]`; } if (lg.skipInput && lg.skipInput.length > 0) { html += ` | Skip: ${lg.skipInput.join(', ')}`; } html += `</p>`; });
+            statsDiv.innerHTML = html;
         }
 
         function updateGAVars() {
@@ -378,48 +821,97 @@
             document.getElementById('layerParamMutationChanceValue').textContent = MUTATE_LAYER_PARAM_CHANCE.toFixed(2);
             const topologyChance = parseFloat(document.getElementById('topologyMutationChance').value);
             ADD_LAYER_CHANCE = topologyChance;
-            REMOVE_LAYER_CHANCE = topologyChance / 2; // Keep remove chance lower
+            REMOVE_LAYER_CHANCE = topologyChance / 2;
             document.getElementById('topologyMutationChanceValue').textContent = topologyChance.toFixed(2);
+            learningRate = parseFloat(document.getElementById('learningRate').value);
+            document.getElementById('learningRateValue').textContent = learningRate.toFixed(4);
+            trainingEpochs = parseInt(document.getElementById('trainingEpochs').value);
+            document.getElementById('trainingEpochsValue').textContent = trainingEpochs;
         }
 
         function setupUI() {
-            const g=document.getElementById('game-grid');
-            g.innerHTML='';
-            g.style.gridTemplateColumns=`repeat(4, 1fr)`;
-            updateGAVars();
-            document.getElementById('time-limit').textContent=generationTimeLimit;
+            const g=document.getElementById('game-grid'); g.innerHTML=''; g.style.gridTemplateColumns=`repeat(4, 1fr)`; updateGAVars(); document.getElementById('time-limit').textContent=generationTimeLimit.toFixed(1);
+            const renderGames = gameSpeed <= 10;
+            document.getElementById('render-status').textContent = renderGames ? 'RENDERING' : 'SIMULATING (Rendering Off)';
+
             for(let i=0;i<POPULATION_SIZE;i++){
-                const d=document.createElement('div');
-                d.className='game-instance';
-                const c=document.createElement('canvas');
-                c.width=200;
-                c.height=150;
-                const o=document.createElement('div');
-                o.className='instance-overlay';
-                o.id=`overlay-${i}`;
-                o.textContent='Fitness: 0 | Lives: 3';
-                d.appendChild(c);
-                d.appendChild(o);
-                g.appendChild(d);
-                gameInstances.push(new Game(c));
+                const d=document.createElement('div'); d.className='game-instance';
+                const c=document.createElement('canvas'); c.width=200; c.height=150;
+                if (!renderGames) { c.style.display = 'none'; } // Hide canvases if not rendering
+                const o=document.createElement('div'); o.className='instance-overlay'; o.id=`overlay-${i}`; o.textContent='Fitness: 0 | Lives: 3';
+                d.appendChild(c); d.appendChild(o); g.appendChild(d); gameInstances.push(new Game(c, population.genomes[i]));
             }
         }
 
         async function startTraining() {
             if (animationFrameId) { cancelAnimationFrame(animationFrameId); }
-            isPaused = false;
-            generation = 0;
-            generationFrames = 0;
-            generationTimeLimit = 25;
+            isPaused = false; generation = 0; generationFrames = 0; generationTimeLimit = 25;
             population = new Population(POPULATION_SIZE);
+            await population.speciate(); // Speciate initial population
             gameInstances = [];
             setupUI();
-            drawNetworkArchitecture(population.genomes[0]);
-            runGeneration();
+            drawNetworkArchitecture('all-time-best-architecture', population.genomes[0], 'All-Time Best Architecture');
+            mainLoop();
         }
 
         function pauseTraining() { isPaused = !isPaused; }
-        window.onload = () => { tf.ready().then(() => { population = new Population(POPULATION_SIZE); setupUI(); }); };
+        window.startTraining = async () => {
+            if (animationFrameId) { cancelAnimationFrame(animationFrameId); }
+            isPaused = false; generation = 0; generationFrames = 0; generationTimeLimit = 25;
+            population = new Population(POPULATION_SIZE);
+            await population.speciate(); // Speciate initial population
+            gameInstances = [];
+            setupUI();
+            drawNetworkArchitecture('all-time-best-architecture', population.genomes[0], 'All-Time Best Architecture');
+            mainLoop();
+        };
+
+        window.pauseTraining = () => { isPaused = !isPaused; };
+
+        window.updateGAVars = () => {
+            gameSpeed = parseInt(document.getElementById('gameSpeed').value);
+            document.getElementById('gameSpeedValue').textContent = gameSpeed;
+            MUTATE_LAYER_PARAM_CHANCE = parseFloat(document.getElementById('layerParamMutationChance').value);
+            document.getElementById('layerParamMutationChanceValue').textContent = MUTATE_LAYER_PARAM_CHANCE.toFixed(2);
+            const topologyChance = parseFloat(document.getElementById('topologyMutationChance').value);
+            ADD_LAYER_CHANCE = topologyChance;
+            REMOVE_LAYER_CHANCE = topologyChance / 2;
+            document.getElementById('topologyMutationChanceValue').textContent = topologyChance.toFixed(2);
+            learningRate = parseFloat(document.getElementById('learningRate').value);
+            document.getElementById('learningRateValue').textContent = learningRate.toFixed(4);
+            trainingEpochs = parseInt(document.getElementById('trainingEpochs').value);
+            document.getElementById('trainingEpochsValue').textContent = trainingEpochs;
+        };
+
+        window.setupUI = () => {
+            const g=document.getElementById('game-grid'); g.innerHTML=''; g.style.gridTemplateColumns=`repeat(4, 1fr)`; updateGAVars(); document.getElementById('time-limit').textContent=generationTimeLimit.toFixed(1);
+            const renderGames = gameSpeed <= 10;
+            document.getElementById('render-status').textContent = renderGames ? 'RENDERING' : 'SIMULATING (Rendering Off)';
+
+            for(let i=0;i<POPULATION_SIZE;i++){
+                const d=document.createElement('div'); d.className='game-instance';
+                const c=document.createElement('canvas'); c.width=200; c.height=150;
+                if (!renderGames) { c.style.display = 'none'; } // Hide canvases if not rendering
+                const o=document.createElement('div'); o.className='instance-overlay'; o.id=`overlay-${i}`; o.textContent='Fitness: 0 | Lives: 3';
+                d.appendChild(c); d.appendChild(o); g.appendChild(d); gameInstances.push(new Game(c, population.genomes[i], generationTimeLimit, generationFrames));
+            }
+        };
+
+        window.onload = () => {
+            tf.ready().then(() => {
+                population = new Population(POPULATION_SIZE);
+                window.setupUI();
+
+                document.getElementById('startButton').addEventListener('click', window.startTraining);
+                document.getElementById('pauseButton').addEventListener('click', window.pauseTraining);
+
+                document.getElementById('gameSpeed').addEventListener('input', window.updateGAVars);
+                document.getElementById('layerParamMutationChance').addEventListener('input', window.updateGAVars);
+                document.getElementById('topologyMutationChance').addEventListener('input', window.updateGAVars);
+                document.getElementById('learningRate').addEventListener('input', window.updateGAVars);
+                document.getElementById('trainingEpochs').addEventListener('input', window.updateGAVars);
+            });
+        };
     </script>
 </body>
-</ht
+</html>
