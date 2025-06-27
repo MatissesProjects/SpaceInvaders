@@ -53,8 +53,8 @@
             </div>
             <div class="slider-container">
                  <label for="topologyMutationChance">Topology Mut. %:</label>
-                <input type="range" id="topologyMutationChance" min="0" max="0.5" step="0.01" value="0.1">
-                <span id="topologyMutationChanceValue">0.10</span>
+                <input type="range" id="topologyMutationChance" min="0" max="0.5" step="0.01" value="0.2">
+                <span id="topologyMutationChanceValue">0.20</span>
             </div>
             <div class="slider-container">
                 <label for="learningRate">Learning Rate:</label>
@@ -97,8 +97,8 @@
         // Mutation rates
         let MUTATE_WEIGHT_CHANCE = 0.8;
         let MUTATE_LAYER_PARAM_CHANCE = 0.3;
-        let ADD_LAYER_CHANCE = 0.1;
-        let REMOVE_LAYER_CHANCE = 0.05;
+        let ADD_LAYER_CHANCE = 0.2;
+        let REMOVE_LAYER_CHANCE = 0.1;
 
         // --- Global Vars ---
         let population;
@@ -533,9 +533,9 @@
                     const layerGene = genome.layerGenes[layerIndex];
                     if (layerGene.type === 'conv2d') {
                         if (Math.random() < 0.1) {
-                            layerGene.params.filters = Math.max(1, layerGene.params.filters * 2);
+                            layerGene.params.filters = Math.min(64, Math.max(16, layerGene.params.filters + (Math.random() < 0.5 ? 8 : 16))); // Increase filters, min 16, max 64
                         } else if (Math.random() < 0.5) {
-                            layerGene.params.filters = Math.max(1, layerGene.params.filters + (Math.random() < 0.5 ? -1 : 1));
+                            layerGene.params.filters = Math.min(64, Math.max(16, layerGene.params.filters + (Math.random() < 0.5 ? -8 : 8))); // Adjust filters, min 16, max 64
                         } else {
                             // Mutate kernelSize as a square kernel within a safe range
                             let currentKernelSize = (Array.isArray(layerGene.params.kernelSize) && layerGene.params.kernelSize.length === 2) ? layerGene.params.kernelSize[0] : 3;
@@ -582,7 +582,7 @@
                             const randomType = layerTypes[Math.floor(Math.random() * layerTypes.length)];
                             let newLayer;
                             if (randomType === 'conv2d') {
-                                newLayer = new LayerGene('conv2d', { filters: 8, kernelSize: [3, 3], activation: 'relu' });
+                                newLayer = new LayerGene('conv2d', { filters: 16, kernelSize: [3, 3], activation: 'relu' });
                             } else if (randomType === 'maxPooling2d') {
                                 newLayer = new LayerGene('maxPooling2d', { poolSize: [2, 2], strides: [2, 2] });
                             } else {
@@ -594,7 +594,8 @@
 
                         } else {
                             // Add a DENSE layer
-                            const newLayer = new LayerGene('dense', { units: 32, activation: 'relu' });
+                            // Add a DENSE layer
+                            const newLayer = new LayerGene('dense', { units: 64, activation: 'relu' });
                             // Insert between flatten and the final output layer
                             const insertStartIndex = flattenIndex + 1;
                             const insertIndex = insertStartIndex + Math.floor(Math.random() * (finalLayerIndex - insertStartIndex));
